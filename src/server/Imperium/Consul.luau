@@ -457,7 +457,7 @@ actions["serveur.redemarrer"] = {
 			acteur,
 			if d.partout == true then "redémarrage (tous serveurs)" else "redémarrage",
 			nil,
-			`{raison} — {delai} s`
+			`{raison} : {Core.formaterCompte(delai)}`
 		)
 		return succes()
 	end,

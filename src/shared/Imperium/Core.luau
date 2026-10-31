@@ -5,7 +5,7 @@
 
 local Core = {}
 
-Core.VERSION = "0.1.1"
+Core.VERSION = "0.1.2"
 
 -- Durées ---------------------------------------------------------------
 
@@ -75,6 +75,25 @@ function Core.formaterDuree(secondes: number?): string
 		table.insert(morceaux, `{m} min`)
 	end
 	return table.concat(morceaux, " ")
+end
+
+-- Compte à rebours compact : 45 -> "45s", 90 -> "1m30s", 3600 -> "1h"
+function Core.formaterCompte(secondes: number): string
+	local s = math.max(0, math.ceil(secondes))
+	local h = s // 3600
+	local m = (s % 3600) // 60
+	local r = s % 60
+	local texte = ""
+	if h > 0 then
+		texte ..= `{h}h`
+	end
+	if m > 0 then
+		texte ..= `{m}m`
+	end
+	if r > 0 or texte == "" then
+		texte ..= `{r}s`
+	end
+	return texte
 end
 
 -- Horodatage Unix -> "17/10/2026 14:05" (heure locale de la machine qui appelle)

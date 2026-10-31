@@ -5,6 +5,7 @@
 -- Les textes reçus doivent déjà être filtrés par l'appelant.
 
 local MessagingService = game:GetService("MessagingService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Imperium = ReplicatedStorage.Shared.Imperium
@@ -14,6 +15,7 @@ local Veredarius = require(Imperium.Veredarius)
 local journal = Scriba.pour("Praeco")
 
 local CANAL = "praeco"
+local CANAL_RAPPEL = "praeco.rappel"
 local SUJET = "Imperium_Praeco"
 
 export type Genre = "info" | "alerte" | "maintenance" | "succes"
@@ -25,7 +27,25 @@ export type Annonce = {
 	titre: string?,
 }
 
+-- Message permanent suivi d'un minuteur, affiché jusqu'à son retrait.
+export type Rappel = {
+	texte: string,
+	fin: number,
+}
+
 local Praeco = {}
+
+local rappelActif: Rappel? = nil
+
+function Praeco.rappel(rappel: Rappel)
+	rappelActif = rappel
+	Veredarius.envoyerATous(CANAL_RAPPEL, rappel)
+end
+
+function Praeco.retirerRappel()
+	rappelActif = nil
+	Veredarius.envoyerATous(CANAL_RAPPEL, nil)
+end
 
 function Praeco.annoncer(annonce: Annonce)
 	Veredarius.envoyerATous(CANAL, annonce)
@@ -46,9 +66,17 @@ end
 
 function Praeco.init()
 	Veredarius.declarer(CANAL)
+	Veredarius.declarer(CANAL_RAPPEL)
 end
 
 function Praeco.demarrer()
+	-- Un joueur qui arrive pendant un compte à rebours doit aussi le voir.
+	Players.PlayerAdded:Connect(function(joueur)
+		if rappelActif then
+			Veredarius.envoyer(CANAL_RAPPEL, joueur, rappelActif)
+		end
+	end)
+
 	local ok, erreur = pcall(MessagingService.SubscribeAsync, MessagingService, SUJET, function(message)
 		Praeco.annoncer(message.Data)
 	end)

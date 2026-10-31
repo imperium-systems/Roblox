@@ -6,6 +6,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
 local Imperium = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Imperium")
+local Core = require(Imperium:WaitForChild("Core"))
 local Veredarius = require(Imperium:WaitForChild("Veredarius"))
 
 local Consul = script.Parent:WaitForChild("Consul")
@@ -23,6 +24,10 @@ local COULEURS: { [string]: Color3 } = {
 }
 
 local FOND_ALERTE = Color3.fromRGB(58, 20, 20)
+
+local HAUT_BANNIERES = 12
+local HAUTEUR_RAPPEL = 44
+local URGENCE = 10 -- secondes restantes à partir desquelles le rappel passe au rouge
 
 local Praeco = {}
 
@@ -141,6 +146,67 @@ local function suivante()
 	enCours = false
 end
 
+-- Rappel permanent en haut de l'écran ; les bannières se décalent en dessous.
+local function creerRappel(ecran: ScreenGui): (any) -> ()
+	local contour = Composants.contour(C.aurum, 1.5)
+	local cadre = creer("Frame", {
+		Name = "Rappel",
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, HAUT_BANNIERES),
+		Size = UDim2.fromOffset(0, HAUTEUR_RAPPEL - 6),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundColor3 = C.panneau,
+		BackgroundTransparency = 0.05,
+		Visible = false,
+		Parent = ecran,
+	}, {
+		Composants.coins(UDim.new(1, 0)),
+		contour,
+		Composants.marges(0, 14, 0, 6),
+		Composants.pile("H", 8),
+	})
+	icone("maintenance", C.aurum, C.panneau).Parent = cadre
+	local texte = Composants.texte({
+		FontFace = Theme.polices.gras,
+		TextColor3 = C.aurum,
+		TextWrapped = false,
+		Size = UDim2.fromOffset(0, 20),
+		AutomaticSize = Enum.AutomaticSize.X,
+		LayoutOrder = 1,
+		Parent = cadre,
+	})
+
+	local function placerBannieres(hauteur: number)
+		TweenService:Create(conteneur, TweenInfo.new(0.2), {
+			Position = UDim2.new(0.5, 0, 0, HAUT_BANNIERES + hauteur),
+		}):Play()
+	end
+
+	local jetonCourant = 0
+
+	return function(rappel: any)
+		jetonCourant += 1
+		local jeton = jetonCourant
+		if type(rappel) ~= "table" then
+			cadre.Visible = false
+			placerBannieres(0)
+			return
+		end
+		cadre.Visible = true
+		placerBannieres(HAUTEUR_RAPPEL)
+		task.spawn(function()
+			while jeton == jetonCourant do
+				local reste = rappel.fin - workspace:GetServerTimeNow()
+				local couleur = if reste <= URGENCE then C.danger else C.aurum
+				texte.Text = `{rappel.texte} {Core.formaterCompte(reste)}`
+				texte.TextColor3 = couleur
+				contour.Color = couleur
+				task.wait(0.2)
+			end
+		end)
+	end
+end
+
 function Praeco.demarrer()
 	local ecran = creer("ScreenGui", {
 		Name = "ImperiumPraeco",
@@ -151,7 +217,7 @@ function Praeco.demarrer()
 	conteneur = creer("Frame", {
 		BackgroundTransparency = 1,
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 12),
+		Position = UDim2.new(0.5, 0, 0, HAUT_BANNIERES),
 		Size = UDim2.new(0.9, 0, 0, 0),
 		ClipsDescendants = false,
 		Parent = ecran,
@@ -166,6 +232,8 @@ function Praeco.demarrer()
 		table.insert(file, annonce)
 		task.spawn(suivante)
 	end)
+
+	Veredarius.surReception("praeco.rappel", creerRappel(ecran))
 end
 
 return Praeco
