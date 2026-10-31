@@ -94,7 +94,7 @@ return function(ctx: any, cadre: Frame)
 		if etat.redemarrage then
 			local reste = math.max(0, math.floor(etat.redemarrage.fin - maintenant()))
 			bandeau.Visible = true
-			texteBandeau.Text = `Redémarrage dans {reste} s : {etat.redemarrage.raison}`
+			texteBandeau.Text = `Redémarrage dans {Core.formaterCompte(reste)} : {etat.redemarrage.raison}`
 		else
 			bandeau.Visible = false
 		end
@@ -267,7 +267,7 @@ return function(ctx: any, cadre: Frame)
 				return
 			end
 			local portee = if partout then "TOUS les serveurs" else "ce serveur"
-			ctx.confirmer("Redémarrer", `Redémarrer {portee} dans {secondes} s ?`, "Redémarrer", function()
+			ctx.confirmer("Redémarrer", `Redémarrer {portee} dans {Core.formaterCompte(secondes)} ?`, "Redémarrer", function()
 				task.spawn(
 					ctx.executer,
 					"serveur.redemarrer",

@@ -9,13 +9,15 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Imperium = ReplicatedStorage.Shared.Imperium
+local Core = require(Imperium.Core)
 local Scriba = require(Imperium.Scriba)
 local Signum = require(Imperium.Signum)
 
 local journal = Scriba.pour("Praefectus")
 
 local SUJET = "Imperium_Praefectus"
-local PALIERS = { 300, 120, 60, 30, 15, 10, 5, 4, 3, 2, 1 }
+-- Les dernières secondes sont suivies par le rappel permanent de Praeco.
+local PALIERS = { 300, 120, 60, 30, 15, 10 }
 
 local Praefectus = {
 	dependances = { "Senatus", "Praeco", "Lex" },
@@ -64,6 +66,7 @@ function Praefectus.redemarrer(delai: number, raison: string): (boolean, string?
 	end
 	local jeton = {}
 	compteARebours = { fin = os.time() + delai, raison = raison, jeton = jeton }
+	Praeco.rappel({ texte = "Redémarrage du serveur dans", fin = compteARebours.fin })
 	changement()
 
 	local function enCours()
@@ -91,7 +94,7 @@ function Praefectus.redemarrer(delai: number, raison: string): (boolean, string?
 				Praeco.annoncer({
 					genre = "maintenance",
 					titre = "Redémarrage du serveur",
-					texte = `{raison} dans {reste} s`,
+					texte = `{raison} dans {Core.formaterCompte(reste)}`,
 					duree = math.min(8, reste),
 				})
 			end
@@ -113,6 +116,7 @@ function Praefectus.annulerRedemarrage(): boolean
 		return false
 	end
 	compteARebours = nil
+	Praeco.retirerRappel()
 	Praeco.annoncer({ genre = "succes", titre = "Redémarrage annulé", texte = "Le serveur reste en ligne.", duree = 6 })
 	changement()
 	return true
