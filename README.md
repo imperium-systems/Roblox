@@ -17,7 +17,7 @@ rojo serve
 For more help, check out [the Rojo documentation](https://rojo.space/docs).
 ## Imperium — Consul (panneau admin)
 
-Ouvrir : **F2** ou le bouton « Consul » en bas à gauche (staff uniquement).
+Ouvrir : **F2** ou le bouton « Imperium » en bas à droite (staff uniquement). À gauche les 12 familles et l'Aide, en haut leurs systèmes. Seul ce que le rang autorise est affiché.
 
 Qui est staff : [src/server/Config/Senatus.luau](src/server/Config/Senatus.luau)
 - `membres` : `[UserId] = "moderateur" | "admin" | "fondateur"`
