@@ -94,7 +94,7 @@ return function(ctx: any, cadre: Frame)
 		if etat.redemarrage then
 			local reste = math.max(0, math.floor(etat.redemarrage.fin - maintenant()))
 			bandeau.Visible = true
-			texteBandeau.Text = `Redémarrage dans {reste} s — {etat.redemarrage.raison}`
+			texteBandeau.Text = `Redémarrage dans {reste} s : {etat.redemarrage.raison}`
 		else
 			bandeau.Visible = false
 		end

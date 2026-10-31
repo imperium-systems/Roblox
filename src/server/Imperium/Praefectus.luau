@@ -91,7 +91,7 @@ function Praefectus.redemarrer(delai: number, raison: string): (boolean, string?
 				Praeco.annoncer({
 					genre = "maintenance",
 					titre = "Redémarrage du serveur",
-					texte = `{raison} — dans {reste} s`,
+					texte = `{raison} dans {reste} s`,
 					duree = math.min(8, reste),
 				})
 			end

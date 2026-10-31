@@ -52,7 +52,7 @@ local function etatVide(): Etat
 end
 
 local function messageBan(mesure: Mesure): string
-	local fin = if mesure.fin then os.date("!%d/%m/%Y %H:%M UTC", mesure.fin) else "définitif"
+	local fin = if mesure.fin then os.date("!%d/%m/%Y %H:%M:%S UTC", mesure.fin) else "définitif"
 	return `Tu es banni de ce jeu.\nMotif : {mesure.raison}\nFin : {fin}`
 end
 
