@@ -1,12 +1,18 @@
--- Point d'entrée client d'Imperium.
+-- Imperium client entry point.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Conditor = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Imperium"):WaitForChild("Conditor"))
+local sharedRoot = ReplicatedStorage:WaitForChild("ImperiumShared", 15)
+if not sharedRoot then
+	warn("[Imperium] ImperiumShared was not found in ReplicatedStorage. See README in the model.")
+	return
+end
 
-local systemes = script:WaitForChild("Imperium")
+local Conditor = require(sharedRoot:WaitForChild("Imperium"):WaitForChild("Conditor"))
 
-Conditor.lancer({
-	systemes:WaitForChild("Praeco"),
-	systemes:WaitForChild("Consul"),
+local systems = script:WaitForChild("Imperium")
+
+Conditor.run({
+	systems:WaitForChild("Praeco"),
+	systems:WaitForChild("Consul"),
 })

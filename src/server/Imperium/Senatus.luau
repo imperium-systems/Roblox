@@ -1,230 +1,230 @@
 --!strict
--- Senatus — rangs et permissions du staff.
--- Répond à « ce joueur a-t-il le droit de… ? ». Gère l'héritage entre rangs.
--- Ne gère ni les rangs de jeu (Cursus) ni le statut VIP (Eques).
+-- Senatus: staff ranks and permissions.
+-- Answers "is this player allowed to...?". Handles inheritance between ranks.
+-- Handles neither game ranks (Cursus) nor VIP status (Eques).
 
 local GroupService = game:GetService("GroupService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
-local Imperium = ReplicatedStorage.Shared.Imperium
+local Imperium = ReplicatedStorage.ImperiumShared.Imperium
 local Scriba = require(Imperium.Scriba)
 local Signum = require(Imperium.Signum)
 
 local config = require(script.Parent.Parent.Config.Senatus) :: any
 
-local journal = Scriba.pour("Senatus")
+local logger = Scriba.scoped("Senatus")
 
-export type Rang = {
+export type Rank = {
 	id: string,
-	nom: string,
-	niveau: number,
-	couleur: Color3,
+	name: string,
+	level: number,
+	color: Color3,
 	permissions: { [string]: true },
 }
 
 local Senatus = {}
 
-local rangs: { [string]: Rang } = {}
-local rangDesJoueurs: { [Player]: Rang } = {}
+local ranks: { [string]: Rank } = {}
+local playerRanks: { [Player]: Rank } = {}
 
-local function compilerRangs()
-	local brut: { [string]: any } = {}
-	for _, definition in config.rangs do
-		brut[definition.id] = definition
+local function compileRanks()
+	local raw: { [string]: any } = {}
+	for _, definition in config.ranks do
+		raw[definition.id] = definition
 	end
 
-	local function permissionsDe(id: string, vus: { [string]: boolean }): { [string]: true }
-		assert(not vus[id], `[Senatus] héritage circulaire autour de "{id}"`)
-		vus[id] = true
-		local definition = brut[id]
-		assert(definition, `[Senatus] rang inconnu : "{id}"`)
-		local resultat: { [string]: true } = {}
-		if definition.herite then
-			for permission in permissionsDe(definition.herite, vus) do
-				resultat[permission] = true
+	local function permissionsOf(id: string, seen: { [string]: boolean }): { [string]: true }
+		assert(not seen[id], `[Senatus] circular inheritance around "{id}"`)
+		seen[id] = true
+		local definition = raw[id]
+		assert(definition, `[Senatus] unknown rank: "{id}"`)
+		local result: { [string]: true } = {}
+		if definition.inherits then
+			for permission in permissionsOf(definition.inherits, seen) do
+				result[permission] = true
 			end
 		end
 		for _, permission in definition.permissions do
-			resultat[permission] = true
+			result[permission] = true
 		end
-		return resultat
+		return result
 	end
 
-	for id, definition in brut do
-		rangs[id] = {
+	for id, definition in raw do
+		ranks[id] = {
 			id = id,
-			nom = definition.nom,
-			niveau = definition.niveau,
-			couleur = definition.couleur,
-			permissions = permissionsDe(id, {}),
+			name = definition.name,
+			level = definition.level,
+			color = definition.color,
+			permissions = permissionsOf(id, {}),
 		}
 	end
 end
 
-local function meilleur(a: Rang?, b: Rang?): Rang?
+local function best(a: Rank?, b: Rank?): Rank?
 	if not a then
 		return b
 	end
 	if not b then
 		return a
 	end
-	return if b.niveau > a.niveau then b else a
+	return if b.level > a.level then b else a
 end
 
-local function rangParGroupe(rangDansGroupe: number): Rang?
-	local trouve: Rang? = nil
-	for seuil, id in config.groupe.rangs do
-		if rangDansGroupe >= seuil then
-			trouve = meilleur(trouve, rangs[id])
+local function rankFromGroup(groupRank: number): Rank?
+	local found: Rank? = nil
+	for threshold, id in config.group.ranks do
+		if groupRank >= threshold then
+			found = best(found, ranks[id])
 		end
 	end
-	return trouve
+	return found
 end
 
--- Calcule le rang d'un UserId, en ligne ou non. Peut céder (appels web).
-local function calculerRang(userId: number, joueur: Player?): Rang?
-	local rang: Rang? = nil
+-- Computes the rank of a UserId, online or not. May yield (web calls).
+local function computeRank(userId: number, player: Player?): Rank?
+	local rank: Rank? = nil
 
-	local id = config.membres[userId]
+	local id = config.members[userId]
 	if id then
-		rang = meilleur(rang, rangs[id])
+		rank = best(rank, ranks[id])
 	end
 
-	-- En Studio : ton propre compte en Play solo, ou Player1 en serveur de test local.
-	-- Player2, Player3… restent de simples joueurs pour pouvoir tester les sanctions.
-	if config.studioEstFondateur and RunService:IsStudio() and joueur and (userId > 0 or userId == -1) then
-		rang = meilleur(rang, rangs.fondateur)
+	-- In Studio: your own account in solo Play, or Player1 on a local test server.
+	-- Player2, Player3... stay regular players so sanctions can be tested.
+	if config.studioIsFounder and RunService:IsStudio() and player and (userId > 0 or userId == -1) then
+		rank = best(rank, ranks.founder)
 	end
 
-	if config.createurEstFondateur then
+	if config.creatorIsFounder then
 		if game.CreatorType == Enum.CreatorType.User and userId == game.CreatorId then
-			rang = meilleur(rang, rangs.fondateur)
+			rank = best(rank, ranks.founder)
 		end
 	end
 
-	-- Rangs de groupe : celui du groupe configuré, et propriétaire du groupe créateur.
-	local groupeConfig = config.groupe.id
-	local groupeCreateur = if config.createurEstFondateur and game.CreatorType == Enum.CreatorType.Group
+	-- Group ranks: the configured group, and the owner of the creator group.
+	local configuredGroup = config.group.id
+	local creatorGroup = if config.creatorIsFounder and game.CreatorType == Enum.CreatorType.Group
 		then game.CreatorId
 		else 0
-	if groupeConfig ~= 0 or groupeCreateur ~= 0 then
-		local ok, groupes = pcall(GroupService.GetGroupsAsync, GroupService, userId)
+	if configuredGroup ~= 0 or creatorGroup ~= 0 then
+		local ok, groups = pcall(GroupService.GetGroupsAsync, GroupService, userId)
 		if ok then
-			for _, groupe in groupes do
-				if groupe.Id == groupeConfig then
-					rang = meilleur(rang, rangParGroupe(groupe.Rank))
+			for _, group in groups do
+				if group.Id == configuredGroup then
+					rank = best(rank, rankFromGroup(group.Rank))
 				end
-				if groupe.Id == groupeCreateur and groupe.Rank == 255 then
-					rang = meilleur(rang, rangs.fondateur)
+				if group.Id == creatorGroup and group.Rank == 255 then
+					rank = best(rank, ranks.founder)
 				end
 			end
 		else
-			journal.avertissement(`groupes de {userId} illisibles :`, groupes)
+			logger.warning(`could not read the groups of {userId}:`, groups)
 		end
 	end
 
-	return rang
+	return rank
 end
 
 -- API ----------------------------------------------------------------------
 
-function Senatus.rang(joueur: Player): Rang?
-	return rangDesJoueurs[joueur]
+function Senatus.rank(player: Player): Rank?
+	return playerRanks[player]
 end
 
-function Senatus.niveau(joueur: Player): number
-	local rang = rangDesJoueurs[joueur]
-	return if rang then rang.niveau else 0
+function Senatus.level(player: Player): number
+	local rank = playerRanks[player]
+	return if rank then rank.level else 0
 end
 
--- Niveau d'un joueur qui peut être hors ligne. Peut céder.
-function Senatus.niveauDe(userId: number): number
-	local joueur = Players:GetPlayerByUserId(userId)
-	if joueur then
-		return Senatus.niveau(joueur)
+-- Level of a player who may be offline. May yield.
+function Senatus.levelOf(userId: number): number
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		return Senatus.level(player)
 	end
-	local rang = calculerRang(userId, nil)
-	return if rang then rang.niveau else 0
+	local rank = computeRank(userId, nil)
+	return if rank then rank.level else 0
 end
 
--- "praetor.ban" est accordé par "praetor.ban", "praetor.*" ou "*".
-function Senatus.peut(joueur: Player, permission: string): boolean
-	local rang = rangDesJoueurs[joueur]
-	if not rang then
+-- "praetor.ban" is granted by "praetor.ban", "praetor.*" or "*".
+function Senatus.can(player: Player, permission: string): boolean
+	local rank = playerRanks[player]
+	if not rank then
 		return false
 	end
-	local p = rang.permissions
+	local p = rank.permissions
 	if p["*"] or p[permission] then
 		return true
 	end
-	local famille = string.match(permission, "^([^%.]+)%.")
-	return famille ~= nil and p[famille .. ".*"] == true
+	local family = string.match(permission, "^([^%.]+)%.")
+	return family ~= nil and p[family .. ".*"] == true
 end
 
--- Un staff ne peut agir que sur plus petit que lui.
-function Senatus.peutAgirSur(acteur: Player, cibleUserId: number): boolean
-	if acteur.UserId == cibleUserId then
+-- Staff can only act on someone below them.
+function Senatus.canActOn(actor: Player, targetUserId: number): boolean
+	if actor.UserId == targetUserId then
 		return false
 	end
-	return Senatus.niveau(acteur) > Senatus.niveauDe(cibleUserId)
+	return Senatus.level(actor) > Senatus.levelOf(targetUserId)
 end
 
--- Liste des permissions connues, pour que l'interface sache quoi afficher.
-local PERMISSIONS_CONNUES = {
-	"consul.ouvrir",
-	"consul.teleporter",
-	"censor.consulter",
-	"censor.journal",
-	"praetor.avertir",
+-- Known permissions, so the interface knows what to show.
+local KNOWN_PERMISSIONS = {
+	"consul.open",
+	"consul.teleport",
+	"censor.view",
+	"censor.log",
+	"praetor.warn",
 	"praetor.mute",
 	"praetor.kick",
 	"praetor.ban",
 	"praetor.unban",
-	"praefectus.annoncer",
-	"praefectus.verrouiller",
-	"praefectus.redemarrer",
-	"lex.modifier",
+	"praefectus.announce",
+	"praefectus.lock",
+	"praefectus.restart",
+	"lex.edit",
 }
 
-function Senatus.permissionsDe(joueur: Player): { [string]: boolean }
-	local resultat = {}
-	for _, permission in PERMISSIONS_CONNUES do
-		resultat[permission] = Senatus.peut(joueur, permission)
+function Senatus.permissionsOf(player: Player): { [string]: boolean }
+	local result = {}
+	for _, permission in KNOWN_PERMISSIONS do
+		result[permission] = Senatus.can(player, permission)
 	end
-	return resultat
+	return result
 end
 
-function Senatus.estStaff(joueur: Player): boolean
-	return Senatus.niveau(joueur) > 0
+function Senatus.isStaff(player: Player): boolean
+	return Senatus.level(player) > 0
 end
 
--- Cycle de vie ---------------------------------------------------------------
+-- Lifecycle ---------------------------------------------------------------
 
-local function surArrivee(joueur: Player)
-	local rang = calculerRang(joueur.UserId, joueur)
-	if not joueur.Parent then
+local function onPlayerAdded(player: Player)
+	local rank = computeRank(player.UserId, player)
+	if not player.Parent then
 		return
 	end
-	if rang then
-		rangDesJoueurs[joueur] = rang
-		journal.info(`{joueur.Name} : {rang.nom}`)
+	if rank then
+		playerRanks[player] = rank
+		logger.info(`{player.Name}: {rank.name}`)
 	end
-	Signum.emit("senatus.rang", joueur, rang)
+	Signum.emit("senatus.rank", player, rank)
 end
 
 function Senatus.init()
-	compilerRangs()
+	compileRanks()
 end
 
-function Senatus.demarrer()
-	Players.PlayerAdded:Connect(surArrivee)
-	for _, joueur in Players:GetPlayers() do
-		task.spawn(surArrivee, joueur)
+function Senatus.start()
+	Players.PlayerAdded:Connect(onPlayerAdded)
+	for _, player in Players:GetPlayers() do
+		task.spawn(onPlayerAdded, player)
 	end
-	Players.PlayerRemoving:Connect(function(joueur)
-		rangDesJoueurs[joueur] = nil
+	Players.PlayerRemoving:Connect(function(player)
+		playerRanks[player] = nil
 	end)
 end
 

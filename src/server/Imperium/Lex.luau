@@ -1,109 +1,109 @@
 --!strict
--- Lex — configuration et règles du jeu.
--- Chaque système déclare ses réglages avec une valeur par défaut. Consul peut les modifier à chaud ;
--- les abonnés sont prévenus via Signum ("lex.change").
--- Ne stocke ni les préférences du joueur (Optio) ni la progression (Tabularius).
+-- Lex: game configuration and rules.
+-- Each system declares its settings with a default value. Consul can edit them live;
+-- subscribers are notified through Signum ("lex.change").
+-- Stores neither player preferences (Optio) nor progression (Tabularius).
 --
--- Les modifications valent pour ce serveur, jusqu'à sa fermeture.
+-- Changes apply to this server until it closes.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Imperium = ReplicatedStorage.Shared.Imperium
+local Imperium = ReplicatedStorage.ImperiumShared.Imperium
 local Core = require(Imperium.Core)
 local Signum = require(Imperium.Signum)
 
-export type TypeReglage = "number" | "boolean" | "string"
+export type SettingType = "number" | "boolean" | "string"
 
 export type Definition = {
-	defaut: any,
-	type: TypeReglage,
+	default: any,
+	type: SettingType,
 	description: string,
 	min: number?,
 	max: number?,
 }
 
-type Reglage = Definition & { valeur: any }
+type Setting = Definition & { value: any }
 
 local Lex = {}
 
-local reglages: { [string]: Reglage } = {}
+local settings: { [string]: Setting } = {}
 
-function Lex.definir(cle: string, definition: Definition)
-	assert(reglages[cle] == nil, `[Lex] réglage déjà défini : {cle}`)
-	assert(type(definition.defaut) == definition.type, `[Lex] défaut de {cle} n'est pas un {definition.type}`)
-	local reglage = table.clone(definition) :: any
-	reglage.valeur = definition.defaut
-	reglages[cle] = reglage
+function Lex.define(key: string, definition: Definition)
+	assert(settings[key] == nil, `[Lex] setting already defined: {key}`)
+	assert(type(definition.default) == definition.type, `[Lex] default of {key} is not a {definition.type}`)
+	local setting = table.clone(definition) :: any
+	setting.value = definition.default
+	settings[key] = setting
 end
 
-function Lex.get(cle: string): any
-	local reglage = reglages[cle]
-	assert(reglage, `[Lex] réglage inconnu : {cle}`)
-	return reglage.valeur
+function Lex.get(key: string): any
+	local setting = settings[key]
+	assert(setting, `[Lex] unknown setting: {key}`)
+	return setting.value
 end
 
--- Renvoie (true) ou (false, code_erreur).
-function Lex.set(cle: string, valeur: any): (boolean, string?)
-	local reglage = reglages[cle]
-	if not reglage then
-		return false, "cle_inconnue"
+-- Returns (true) or (false, error_code).
+function Lex.set(key: string, value: any): (boolean, string?)
+	local setting = settings[key]
+	if not setting then
+		return false, "unknown_key"
 	end
-	if type(valeur) ~= reglage.type then
-		return false, "valeur_invalide"
+	if type(value) ~= setting.type then
+		return false, "invalid_value"
 	end
-	if reglage.type == "number" then
-		if not Core.estNombre(valeur) then
-			return false, "valeur_invalide"
+	if setting.type == "number" then
+		if not Core.isNumber(value) then
+			return false, "invalid_value"
 		end
-		if (reglage.min and valeur < reglage.min) or (reglage.max and valeur > reglage.max) then
-			return false, "hors_limites"
+		if (setting.min and value < setting.min) or (setting.max and value > setting.max) then
+			return false, "out_of_range"
 		end
-	elseif reglage.type == "string" and not Core.estTexte(valeur, 500) then
-		return false, "valeur_invalide"
+	elseif setting.type == "string" and not Core.isText(value, 500) then
+		return false, "invalid_value"
 	end
-	local ancienne = reglage.valeur
-	if ancienne == valeur then
+	local previous = setting.value
+	if previous == value then
 		return true
 	end
-	reglage.valeur = valeur
-	Signum.emit("lex.change", cle, valeur, ancienne)
+	setting.value = value
+	Signum.emit("lex.change", key, value, previous)
 	return true
 end
 
-function Lex.reinitialiser(cle: string): (boolean, string?)
-	local reglage = reglages[cle]
-	if not reglage then
-		return false, "cle_inconnue"
+function Lex.reset(key: string): (boolean, string?)
+	local setting = settings[key]
+	if not setting then
+		return false, "unknown_key"
 	end
-	return Lex.set(cle, reglage.defaut)
+	return Lex.set(key, setting.default)
 end
 
--- Appelle fn(valeur, ancienne) à chaque changement de cette clé.
-function Lex.surChangement(cle: string, fn: (any, any) -> ()): () -> ()
-	return Signum.on("lex.change", function(cleChangee, valeur, ancienne)
-		if cleChangee == cle then
-			fn(valeur, ancienne)
+-- Calls fn(value, previous) on every change of this key.
+function Lex.onChange(key: string, fn: (any, any) -> ()): () -> ()
+	return Signum.on("lex.change", function(changedKey, value, previous)
+		if changedKey == key then
+			fn(value, previous)
 		end
 	end)
 end
 
-function Lex.liste(): { { [string]: any } }
-	local liste = {}
-	for cle, reglage in reglages do
-		table.insert(liste, {
-			cle = cle,
-			valeur = reglage.valeur,
-			defaut = reglage.defaut,
-			type = reglage.type,
-			description = reglage.description,
-			min = reglage.min,
-			max = reglage.max,
+function Lex.list(): { { [string]: any } }
+	local list = {}
+	for key, setting in settings do
+		table.insert(list, {
+			key = key,
+			value = setting.value,
+			default = setting.default,
+			type = setting.type,
+			description = setting.description,
+			min = setting.min,
+			max = setting.max,
 		})
 	end
-	table.sort(liste, function(a, b)
-		return a.cle < b.cle
+	table.sort(list, function(a, b)
+		return a.key < b.key
 	end)
-	return liste
+	return list
 end
 
 return Lex

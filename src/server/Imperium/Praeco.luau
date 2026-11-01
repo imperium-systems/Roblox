@@ -1,87 +1,87 @@
 --!strict
--- Praeco — annonces officielles dans le jeu.
--- Bannières pour tous les joueurs (ce serveur ou tous les serveurs) et avis individuels.
--- Ne fait pas les notifications hors du jeu (Nuntius).
--- Les textes reçus doivent déjà être filtrés par l'appelant.
+-- Praeco: official in-game announcements.
+-- Banners for all players (this server or all servers) and individual notices.
+-- Does not send out-of-game notifications (Nuntius).
+-- Received text must already be filtered by the caller.
 
 local MessagingService = game:GetService("MessagingService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Imperium = ReplicatedStorage.Shared.Imperium
+local Imperium = ReplicatedStorage.ImperiumShared.Imperium
 local Scriba = require(Imperium.Scriba)
 local Veredarius = require(Imperium.Veredarius)
 
-local journal = Scriba.pour("Praeco")
+local logger = Scriba.scoped("Praeco")
 
-local CANAL = "praeco"
-local CANAL_RAPPEL = "praeco.rappel"
-local SUJET = "Imperium_Praeco"
+local CHANNEL = "praeco"
+local REMINDER_CHANNEL = "praeco.reminder"
+local TOPIC = "Imperium_Praeco"
 
-export type Genre = "info" | "alerte" | "maintenance" | "succes"
+export type Kind = "info" | "warning" | "maintenance" | "success"
 
 export type Annonce = {
-	texte: string,
-	genre: Genre,
-	duree: number?,
-	titre: string?,
+	text: string,
+	kind: Kind,
+	duration: number?,
+	title: string?,
 }
 
--- Message permanent suivi d'un minuteur, affiché jusqu'à son retrait.
-export type Rappel = {
-	texte: string,
-	fin: number,
+-- Permanent message with a timer, shown until it is removed.
+export type Reminder = {
+	text: string,
+	expiresAt: number,
 }
 
 local Praeco = {}
 
-local rappelActif: Rappel? = nil
+local activeReminder: Reminder? = nil
 
-function Praeco.rappel(rappel: Rappel)
-	rappelActif = rappel
-	Veredarius.envoyerATous(CANAL_RAPPEL, rappel)
+function Praeco.reminder(reminder: Reminder)
+	activeReminder = reminder
+	Veredarius.sendToAll(REMINDER_CHANNEL, reminder)
 end
 
-function Praeco.retirerRappel()
-	rappelActif = nil
-	Veredarius.envoyerATous(CANAL_RAPPEL, nil)
+function Praeco.removeReminder()
+	activeReminder = nil
+	Veredarius.sendToAll(REMINDER_CHANNEL, nil)
 end
 
-function Praeco.annoncer(annonce: Annonce)
-	Veredarius.envoyerATous(CANAL, annonce)
+function Praeco.announce(announcement: Annonce)
+	Veredarius.sendToAll(CHANNEL, announcement)
 end
 
--- Diffuse sur tous les serveurs du jeu, y compris celui-ci.
-function Praeco.annoncerPartout(annonce: Annonce)
-	local ok, erreur = pcall(MessagingService.PublishAsync, MessagingService, SUJET, annonce)
+-- Broadcasts to every server of the game, including this one.
+function Praeco.announceEverywhere(announcement: Annonce)
+	local ok, err = pcall(MessagingService.PublishAsync, MessagingService, TOPIC, announcement)
 	if not ok then
-		journal.avertissement("diffusion inter-serveurs impossible, annonce locale seulement :", erreur)
-		Praeco.annoncer(annonce)
+		logger.warning("cross-server broadcast failed, announcing locally only:", err)
+		Praeco.announce(announcement)
 	end
 end
 
-function Praeco.notifier(joueur: Player, annonce: Annonce)
-	Veredarius.envoyer(CANAL, joueur, annonce)
+function Praeco.notify(player: Player, announcement: Annonce)
+	Veredarius.send(CHANNEL, player, announcement)
 end
 
 function Praeco.init()
-	Veredarius.declarer(CANAL)
-	Veredarius.declarer(CANAL_RAPPEL)
+	Veredarius.declare(CHANNEL)
+	Veredarius.declare(REMINDER_CHANNEL)
 end
 
-function Praeco.demarrer()
-	-- Un joueur qui arrive pendant un compte à rebours doit aussi le voir.
-	Players.PlayerAdded:Connect(function(joueur)
-		if rappelActif then
-			Veredarius.envoyer(CANAL_RAPPEL, joueur, rappelActif)
+function Praeco.start()
+	-- A player joining during a countdown must see it too.
+	Players.PlayerAdded:Connect(function(player)
+		if activeReminder then
+			Veredarius.send(REMINDER_CHANNEL, player, activeReminder)
 		end
 	end)
 
-	local ok, erreur = pcall(MessagingService.SubscribeAsync, MessagingService, SUJET, function(message)
-		Praeco.annoncer(message.Data)
+	local ok, err = pcall(MessagingService.SubscribeAsync, MessagingService, TOPIC, function(message)
+		Praeco.announce(message.Data)
 	end)
 	if not ok then
-		journal.avertissement("abonnement inter-serveurs impossible :", erreur)
+		logger.warning("cross-server subscription failed:", err)
 	end
 end
 
