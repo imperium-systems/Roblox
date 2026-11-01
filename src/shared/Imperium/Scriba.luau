@@ -1,63 +1,63 @@
 --!strict
--- Scriba — journaux techniques du moteur.
--- Ne trace pas les actions du staff ni des joueurs : c'est le rôle de Censor.
+-- Scriba: engine technical logs.
+-- Does not track staff or player actions: that is the role of Censor.
 
 local RunService = game:GetService("RunService")
 
 local Signum = require(script.Parent.Signum)
 
-local NIVEAUX = {
+local LEVELS = {
 	debug = 1,
 	info = 2,
-	avertissement = 3,
-	erreur = 4,
+	warning = 3,
+	err = 4,
 }
 
-export type Journal = {
+export type Logger = {
 	debug: (...any) -> (),
 	info: (...any) -> (),
-	avertissement: (...any) -> (),
-	erreur: (...any) -> (),
+	warning: (...any) -> (),
+	err: (...any) -> (),
 }
 
 local Scriba = {}
 
--- Niveau minimal affiché. Plus bavard en Studio.
-Scriba.niveau = if RunService:IsStudio() then NIVEAUX.debug else NIVEAUX.info
+-- Minimum displayed level. More verbose in Studio.
+Scriba.level = if RunService:IsStudio() then LEVELS.debug else LEVELS.info
 
-local function assembler(...: any): string
-	local morceaux = table.pack(...)
-	for i = 1, morceaux.n do
-		morceaux[i] = tostring(morceaux[i])
+local function joinArgs(...: any): string
+	local parts = table.pack(...)
+	for i = 1, parts.n do
+		parts[i] = tostring(parts[i])
 	end
-	return table.concat(morceaux, " ", 1, morceaux.n)
+	return table.concat(parts, " ", 1, parts.n)
 end
 
--- Renvoie un journal préfixé par le nom du système.
-function Scriba.pour(systeme: string): Journal
-	local prefixe = `[{systeme}]`
+-- Returns a logger prefixed with the system name.
+function Scriba.scoped(system: string): Logger
+	local prefix = `[{system}]`
 
 	return {
 		debug = function(...)
-			if Scriba.niveau <= NIVEAUX.debug then
-				print(prefixe, assembler(...))
+			if Scriba.level <= LEVELS.debug then
+				print(prefix, joinArgs(...))
 			end
 		end,
 		info = function(...)
-			if Scriba.niveau <= NIVEAUX.info then
-				print(prefixe, assembler(...))
+			if Scriba.level <= LEVELS.info then
+				print(prefix, joinArgs(...))
 			end
 		end,
-		avertissement = function(...)
-			if Scriba.niveau <= NIVEAUX.avertissement then
-				warn(prefixe, assembler(...))
+		warning = function(...)
+			if Scriba.level <= LEVELS.warning then
+				warn(prefix, joinArgs(...))
 			end
 		end,
-		erreur = function(...)
-			local message = assembler(...)
-			warn(prefixe, "ERREUR", message)
-			-- Nuntius pourra s'abonner pour relayer les erreurs graves hors du jeu.
-			Signum.emit("scriba.erreur", systeme, message)
+		err = function(...)
+			local message = joinArgs(...)
+			warn(prefix, "ERROR", message)
+			-- Nuntius can subscribe to relay serious errors outside the game.
+			Signum.emit("scriba.error", system, message)
 		end,
 	}
 end

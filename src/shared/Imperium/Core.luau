@@ -1,50 +1,47 @@
 --!strict
--- Core — racine de la suite.
--- Utilitaires partagés, constantes globales et version d'Imperium.
--- Aucune logique métier ici : un utilitaire qui ne sert qu'à un système reste dans ce système.
+-- Core: root of the suite.
+-- Shared utilities, global constants and the Imperium version.
+-- No business logic here: a utility used by a single system stays in that system.
 
 local Core = {}
 
-Core.VERSION = "0.1.3"
+Core.VERSION = "0.1.4"
 
--- Durées ---------------------------------------------------------------
+-- Durations ---------------------------------------------------------------
 
-local UNITES: { [string]: number } = {
+local UNITS: { [string]: number } = {
 	s = 1,
 	m = 60,
 	min = 60,
 	h = 3600,
-	j = 86400,
 	d = 86400,
-	sem = 604800,
 	w = 604800,
 }
 
-local DEFINITIF: { [string]: boolean } = {
+local PERMANENT: { [string]: boolean } = {
 	[""] = true,
 	["0"] = true,
 	perm = true,
-	definitif = true,
 }
 
--- Lit une durée écrite par un humain : "30s", "10m", "2h", "7j", "1h30m".
--- Un nombre sans unité compte en minutes.
--- Renvoie (true, secondes) ou (true, nil) pour une durée définitive, (false) si illisible.
-function Core.lireDuree(texte: string): (boolean, number?)
-	local propre = string.lower((string.gsub(texte, "%s", "")))
-	if DEFINITIF[propre] then
+-- Reads a human-written duration: "30s", "10m", "2h", "7d", "1h30m".
+-- A number without a unit counts as minutes.
+-- Returns (true, seconds) or (true, nil) for a permanent duration, (false) if unreadable.
+function Core.parseDuration(text: string): (boolean, number?)
+	local clean = string.lower((string.gsub(text, "%s", "")))
+	if PERMANENT[clean] then
 		return true, nil
 	end
-	if (string.gsub(propre, "%d+%a*", "")) ~= "" then
+	if (string.gsub(clean, "%d+%a*", "")) ~= "" then
 		return false, nil
 	end
 	local total = 0
-	for nombre, unite in string.gmatch(propre, "(%d+)(%a*)") do
-		local mult = UNITES[if unite == "" then "m" else unite]
+	for amount, unit in string.gmatch(clean, "(%d+)(%a*)") do
+		local mult = UNITS[if unit == "" then "m" else unit]
 		if not mult then
 			return false, nil
 		end
-		total += (tonumber(nombre) :: number) * mult
+		total += (tonumber(amount) :: number) * mult
 	end
 	if total <= 0 then
 		return false, nil
@@ -53,95 +50,95 @@ function Core.lireDuree(texte: string): (boolean, number?)
 end
 
 -- 9000 -> "2 h 30 min"
-function Core.formaterDuree(secondes: number?): string
-	if secondes == nil then
-		return "définitif"
+function Core.formatDuration(seconds: number?): string
+	if seconds == nil then
+		return "permanent"
 	end
-	local s = math.max(0, math.floor(secondes))
+	local s = math.max(0, math.floor(seconds))
 	if s < 60 then
 		return `{s} s`
 	end
-	local j = s // 86400
+	local days = s // 86400
 	local h = (s % 86400) // 3600
 	local m = (s % 3600) // 60
-	local morceaux = {}
-	if j > 0 then
-		table.insert(morceaux, `{j} j`)
+	local parts = {}
+	if days > 0 then
+		table.insert(parts, `{days} d`)
 	end
 	if h > 0 then
-		table.insert(morceaux, `{h} h`)
+		table.insert(parts, `{h} h`)
 	end
-	if m > 0 and j == 0 then
-		table.insert(morceaux, `{m} min`)
+	if m > 0 and days == 0 then
+		table.insert(parts, `{m} min`)
 	end
-	return table.concat(morceaux, " ")
+	return table.concat(parts, " ")
 end
 
--- Compte à rebours compact : 45 -> "45s", 90 -> "1m30s", 3600 -> "1h"
-function Core.formaterCompte(secondes: number): string
-	local s = math.max(0, math.ceil(secondes))
+-- Compact countdown: 45 -> "45s", 90 -> "1m30s", 3600 -> "1h"
+function Core.formatCountdown(seconds: number): string
+	local s = math.max(0, math.ceil(seconds))
 	local h = s // 3600
 	local m = (s % 3600) // 60
 	local r = s % 60
-	local texte = ""
+	local text = ""
 	if h > 0 then
-		texte ..= `{h}h`
+		text ..= `{h}h`
 	end
 	if m > 0 then
-		texte ..= `{m}m`
+		text ..= `{m}m`
 	end
-	if r > 0 or texte == "" then
-		texte ..= `{r}s`
+	if r > 0 or text == "" then
+		text ..= `{r}s`
 	end
-	return texte
+	return text
 end
 
--- Horodatage Unix -> "17/10/2026 14:05" (heure locale de la machine qui appelle)
-function Core.formaterDate(horodatage: number?): string
-	if horodatage == nil then
+-- Unix timestamp -> "17/10/2026 14:05" (local time of the calling machine)
+function Core.formatDate(timestamp: number?): string
+	if timestamp == nil then
 		return "—"
 	end
-	return os.date("%d/%m/%Y %H:%M", horodatage) :: string
+	return os.date("%d/%m/%Y %H:%M", timestamp) :: string
 end
 
 -- Tables ---------------------------------------------------------------
 
-function Core.copie<T>(valeur: T): T
-	if type(valeur) ~= "table" then
-		return valeur
+function Core.deepCopy<T>(value: T): T
+	if type(value) ~= "table" then
+		return value
 	end
-	local resultat = {}
-	for k, v in valeur :: any do
-		resultat[Core.copie(k)] = Core.copie(v)
+	local result = {}
+	for k, v in value :: any do
+		result[Core.deepCopy(k)] = Core.deepCopy(v)
 	end
-	return resultat :: any
+	return result :: any
 end
 
-function Core.cles(t: { [any]: any }): { any }
-	local liste = {}
+function Core.keys(t: { [any]: any }): { any }
+	local list = {}
 	for k in t do
-		table.insert(liste, k)
+		table.insert(list, k)
 	end
-	return liste
+	return list
 end
 
 -- Validation -------------------------------------------------------------
--- Pour les données venues du réseau : jamais faire confiance au type annoncé.
+-- For data coming from the network: never trust the announced type.
 
-function Core.estTexte(v: any, longueurMax: number?): boolean
-	return type(v) == "string" and utf8.len(v) ~= nil and #v <= (longueurMax or 200)
+function Core.isText(v: any, maxLength: number?): boolean
+	return type(v) == "string" and utf8.len(v) ~= nil and #v <= (maxLength or 200)
 end
 
-function Core.estEntierPositif(v: any): boolean
+function Core.isPositiveInteger(v: any): boolean
 	return type(v) == "number" and v == v and v > 0 and v % 1 == 0 and v < 2 ^ 53
 end
 
--- UserId Roblox. Les joueurs de test Studio (Player1, Player2…) ont des identifiants négatifs.
-function Core.estUserId(v: any): boolean
+-- Roblox UserId. Studio test players (Player1, Player2...) have negative ids.
+function Core.isUserId(v: any): boolean
 	return type(v) == "number" and v == v and v ~= 0 and v % 1 == 0 and math.abs(v) < 2 ^ 53
 end
 
-function Core.estNombre(v: any): boolean
+function Core.isNumber(v: any): boolean
 	return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
 end
 

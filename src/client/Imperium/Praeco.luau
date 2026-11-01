@@ -1,239 +1,239 @@
 --!strict
--- Praeco — affichage des annonces officielles, pour tous les joueurs.
+-- Praeco: displays official announcements for all players.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
-local Imperium = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Imperium")
+local Imperium = ReplicatedStorage:WaitForChild("ImperiumShared"):WaitForChild("Imperium")
 local Core = require(Imperium:WaitForChild("Core"))
 local Veredarius = require(Imperium:WaitForChild("Veredarius"))
 
 local Consul = script.Parent:WaitForChild("Consul")
 local Theme = require(Consul:WaitForChild("Theme"))
-local Composants = require(Consul:WaitForChild("Composants"))
+local Components = require(Consul:WaitForChild("Components"))
 
-local C = Theme.couleurs
-local creer = Composants.creer
+local C = Theme.colors
+local create = Components.create
 
-local COULEURS: { [string]: Color3 } = {
+local COLORS: { [string]: Color3 } = {
 	info = C.info,
-	alerte = C.danger,
+	warning = C.danger,
 	maintenance = C.aurum,
-	succes = C.succes,
+	success = C.success,
 }
 
-local FOND_ALERTE = Color3.fromRGB(58, 20, 20)
+local WARNING_BACKGROUND = C.dangerSoft
 
-local HAUT_BANNIERES = 12
-local HAUTEUR_RAPPEL = 44
-local URGENCE = 10 -- secondes restantes à partir desquelles le rappel passe au rouge
+local BANNER_TOP = 12
+local REMINDER_HEIGHT = 44
+local URGENT_SECONDS = 10 -- seconds left at which the reminder turns red
 
 local Praeco = {}
 
-local file: { any } = {}
-local enCours = false
-local conteneur: Frame
+local queue: { any } = {}
+local running = false
+local container: Frame
 
--- Trait d'icône, centré sur (x, y) dans une pastille de 28 px.
-local function trait(parent: Instance, couleur: Color3, x: number, y: number, l: number, h: number, rotation: number?)
-	creer("Frame", {
+-- Icon stroke, centered on (x, y) in a 28 px badge.
+local function line(parent: Instance, color: Color3, x: number, y: number, l: number, h: number, rotation: number?)
+	create("Frame", {
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromOffset(x, y),
 		Size = UDim2.fromOffset(l, h),
 		Rotation = rotation or 0,
-		BackgroundColor3 = couleur,
+		BackgroundColor3 = color,
 		BorderSizePixel = 0,
 		Parent = parent,
 	})
 end
 
--- Icônes dessinées avec des cadres : aucune image à héberger, nette à toute résolution.
-local function icone(genre: string, couleur: Color3, fond: Color3): Frame
-	local pastille = creer("Frame", {
+-- Icons drawn with frames: no image to host, sharp at any resolution.
+local function icon(kind: string, color: Color3, background: Color3): Frame
+	local badge = create("Frame", {
 		Size = UDim2.fromOffset(28, 28),
-		BackgroundColor3 = couleur,
+		BackgroundColor3 = color,
 		BackgroundTransparency = 0.8,
 	}, {
-		Composants.coins(UDim.new(1, 0)),
-		Composants.contour(couleur, 1.5),
+		Components.corners(Theme.radiusSmall),
+		Components.stroke(color, 1.5),
 	})
-	if genre == "alerte" then
-		trait(pastille, couleur, 14, 11, 3, 10)
-		trait(pastille, couleur, 14, 20, 3, 3)
-	elseif genre == "succes" then
-		trait(pastille, couleur, 10, 16, 3, 7, -45)
-		trait(pastille, couleur, 16, 14, 3, 13, 45)
-	elseif genre == "maintenance" then
-		-- Roue dentée : trois barres croisées, un disque, un trou.
+	if kind == "warning" then
+		line(badge, color, 14, 11, 3, 10)
+		line(badge, color, 14, 20, 3, 3)
+	elseif kind == "success" then
+		line(badge, color, 10, 16, 3, 7, -45)
+		line(badge, color, 16, 14, 3, 13, 45)
+	elseif kind == "maintenance" then
+		-- Gear: three crossed bars, a disc, a hole.
 		for _, rotation in { 0, 60, 120 } do
-			trait(pastille, couleur, 14, 14, 4, 18, rotation)
+			line(badge, color, 14, 14, 4, 18, rotation)
 		end
-		creer("Frame", {
+		create("Frame", {
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			Position = UDim2.fromOffset(14, 14),
 			Size = UDim2.fromOffset(12, 12),
-			BackgroundColor3 = couleur,
-			Parent = pastille,
-		}, { Composants.coins(UDim.new(1, 0)) })
-		creer("Frame", {
+			BackgroundColor3 = color,
+			Parent = badge,
+		}, { Components.corners(UDim.new(1, 0)) })
+		create("Frame", {
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			Position = UDim2.fromOffset(14, 14),
 			Size = UDim2.fromOffset(5, 5),
-			BackgroundColor3 = fond,
-			Parent = pastille,
-		}, { Composants.coins(UDim.new(1, 0)) })
+			BackgroundColor3 = background,
+			Parent = badge,
+		}, { Components.corners(UDim.new(1, 0)) })
 	else
-		trait(pastille, couleur, 14, 8, 3, 3)
-		trait(pastille, couleur, 14, 16, 3, 9)
+		line(badge, color, 14, 8, 3, 3)
+		line(badge, color, 14, 16, 3, 9)
 	end
-	return pastille
+	return badge
 end
 
-local function afficher(annonce: any)
-	local couleur = COULEURS[annonce.genre] or C.info
-	local fond = if annonce.genre == "alerte" then FOND_ALERTE else C.panneau
-	local banniere = creer("Frame", {
+local function display(announcement: any)
+	local color = COLORS[announcement.kind] or C.info
+	local background = if announcement.kind == "warning" then WARNING_BACKGROUND else C.panel
+	local banner = create("Frame", {
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.new(0.5, 0, 0, -80),
 		Size = UDim2.new(1, 0, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundColor3 = fond,
+		BackgroundColor3 = background,
 		BackgroundTransparency = 0.05,
-		Parent = conteneur,
+		Parent = container,
 	}, {
-		Composants.coins(),
-		Composants.contour(couleur, 1.5),
-		Composants.marges(10, 16),
+		Components.corners(),
+		Components.stroke(color, 1.5),
+		Components.padding(10, 16),
 	})
-	icone(annonce.genre, couleur, fond).Parent = banniere
-	local bloc = creer("Frame", {
+	icon(announcement.kind, color, background).Parent = banner
+	local block = create("Frame", {
 		BackgroundTransparency = 1,
 		Position = UDim2.fromOffset(40, 0),
 		Size = UDim2.new(1, -40, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
-		Parent = banniere,
-	}, { Composants.pile("V", 2) })
-	if annonce.titre then
-		Composants.texte({
-			Text = annonce.titre,
-			FontFace = Theme.polices.gras,
-			TextColor3 = couleur,
-			TextSize = Theme.tailles.petit,
+		Parent = banner,
+	}, { Components.stack("V", 2) })
+	if announcement.title then
+		Components.text({
+			Text = announcement.title,
+			FontFace = Theme.fonts.bold,
+			TextColor3 = color,
+			TextSize = Theme.sizes.small,
 			LayoutOrder = 1,
-			Parent = bloc,
+			Parent = block,
 		})
 	end
-	Composants.paragraphe(tostring(annonce.texte), { LayoutOrder = 2, Parent = bloc })
+	Components.paragraph(tostring(announcement.text), { LayoutOrder = 2, Parent = block })
 
-	local entree = TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-	TweenService:Create(banniere, entree, { Position = UDim2.new(0.5, 0, 0, 0) }):Play()
-	task.wait(math.clamp(tonumber(annonce.duree) or 8, 2, 30))
-	local sortie = TweenService:Create(banniere, TweenInfo.new(0.25), { Position = UDim2.new(0.5, 0, 0, -120) })
-	sortie:Play()
-	sortie.Completed:Wait()
-	banniere:Destroy()
+	local enterTween = TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+	TweenService:Create(banner, enterTween, { Position = UDim2.new(0.5, 0, 0, 0) }):Play()
+	task.wait(math.clamp(tonumber(announcement.duration) or 8, 2, 30))
+	local exitTween = TweenService:Create(banner, TweenInfo.new(0.25), { Position = UDim2.new(0.5, 0, 0, -120) })
+	exitTween:Play()
+	exitTween.Completed:Wait()
+	banner:Destroy()
 end
 
-local function suivante()
-	if enCours then
+local function processQueue()
+	if running then
 		return
 	end
-	enCours = true
-	while #file > 0 do
-		afficher(table.remove(file, 1))
+	running = true
+	while #queue > 0 do
+		display(table.remove(queue, 1))
 	end
-	enCours = false
+	running = false
 end
 
--- Rappel permanent en haut de l'écran ; les bannières se décalent en dessous.
-local function creerRappel(ecran: ScreenGui): (any) -> ()
-	local contour = Composants.contour(C.aurum, 1.5)
-	local cadre = creer("Frame", {
-		Name = "Rappel",
+-- Permanent reminder at the top of the screen; banners shift below it.
+local function createReminder(screen: ScreenGui): (any) -> ()
+	local stroke = Components.stroke(C.aurum, 1.5)
+	local frame = create("Frame", {
+		Name = "Reminder",
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, HAUT_BANNIERES),
-		Size = UDim2.fromOffset(0, HAUTEUR_RAPPEL - 6),
+		Position = UDim2.new(0.5, 0, 0, BANNER_TOP),
+		Size = UDim2.fromOffset(0, REMINDER_HEIGHT - 6),
 		AutomaticSize = Enum.AutomaticSize.X,
-		BackgroundColor3 = C.panneau,
+		BackgroundColor3 = C.panel,
 		BackgroundTransparency = 0.05,
 		Visible = false,
-		Parent = ecran,
+		Parent = screen,
 	}, {
-		Composants.coins(UDim.new(1, 0)),
-		contour,
-		Composants.marges(0, 14, 0, 6),
-		Composants.pile("H", 8),
+		Components.corners(Theme.radiusSmall),
+		stroke,
+		Components.padding(0, 14, 0, 6),
+		Components.stack("H", 8),
 	})
-	icone("maintenance", C.aurum, C.panneau).Parent = cadre
-	local texte = Composants.texte({
-		FontFace = Theme.polices.gras,
+	icon("maintenance", C.aurum, C.panel).Parent = frame
+	local text = Components.text({
+		FontFace = Theme.fonts.bold,
 		TextColor3 = C.aurum,
 		TextWrapped = false,
 		Size = UDim2.fromOffset(0, 20),
 		AutomaticSize = Enum.AutomaticSize.X,
 		LayoutOrder = 1,
-		Parent = cadre,
+		Parent = frame,
 	})
 
-	local function placerBannieres(hauteur: number)
-		TweenService:Create(conteneur, TweenInfo.new(0.2), {
-			Position = UDim2.new(0.5, 0, 0, HAUT_BANNIERES + hauteur),
+	local function placeBanners(height: number)
+		TweenService:Create(container, TweenInfo.new(0.2), {
+			Position = UDim2.new(0.5, 0, 0, BANNER_TOP + height),
 		}):Play()
 	end
 
-	local jetonCourant = 0
+	local currentToken = 0
 
-	return function(rappel: any)
-		jetonCourant += 1
-		local jeton = jetonCourant
-		if type(rappel) ~= "table" then
-			cadre.Visible = false
-			placerBannieres(0)
+	return function(reminder: any)
+		currentToken += 1
+		local token = currentToken
+		if type(reminder) ~= "table" then
+			frame.Visible = false
+			placeBanners(0)
 			return
 		end
-		cadre.Visible = true
-		placerBannieres(HAUTEUR_RAPPEL)
+		frame.Visible = true
+		placeBanners(REMINDER_HEIGHT)
 		task.spawn(function()
-			while jeton == jetonCourant do
-				local reste = rappel.fin - workspace:GetServerTimeNow()
-				local couleur = if reste <= URGENCE then C.danger else C.aurum
-				texte.Text = `{rappel.texte} {Core.formaterCompte(reste)}`
-				texte.TextColor3 = couleur
-				contour.Color = couleur
+			while token == currentToken do
+				local remaining = reminder.expiresAt - workspace:GetServerTimeNow()
+				local color = if remaining <= URGENT_SECONDS then C.danger else C.aurum
+				text.Text = `{reminder.text} {Core.formatCountdown(remaining)}`
+				text.TextColor3 = color
+				stroke.Color = color
 				task.wait(0.2)
 			end
 		end)
 	end
 end
 
-function Praeco.demarrer()
-	local ecran = creer("ScreenGui", {
+function Praeco.start()
+	local screen = create("ScreenGui", {
 		Name = "ImperiumPraeco",
 		ResetOnSpawn = false,
 		DisplayOrder = 100,
 		Parent = Players.LocalPlayer:WaitForChild("PlayerGui"),
 	})
-	conteneur = creer("Frame", {
+	container = create("Frame", {
 		BackgroundTransparency = 1,
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, HAUT_BANNIERES),
+		Position = UDim2.new(0.5, 0, 0, BANNER_TOP),
 		Size = UDim2.new(0.9, 0, 0, 0),
 		ClipsDescendants = false,
-		Parent = ecran,
+		Parent = screen,
 	}, {
-		creer("UISizeConstraint", { MaxSize = Vector2.new(560, math.huge) }),
+		create("UISizeConstraint", { MaxSize = Vector2.new(560, math.huge) }),
 	})
 
-	Veredarius.surReception("praeco", function(annonce)
-		if type(annonce) ~= "table" then
+	Veredarius.onReceive("praeco", function(announcement)
+		if type(announcement) ~= "table" then
 			return
 		end
-		table.insert(file, annonce)
-		task.spawn(suivante)
+		table.insert(queue, announcement)
+		task.spawn(processQueue)
 	end)
 
-	Veredarius.surReception("praeco.rappel", creerRappel(ecran))
+	Veredarius.onReceive("praeco.reminder", createReminder(screen))
 end
 
 return Praeco

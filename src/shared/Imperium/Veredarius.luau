@@ -1,16 +1,16 @@
 --!strict
--- Veredarius — réseau.
--- Communication client-serveur nommée, avec limitation de débit par joueur côté serveur.
--- Les gestionnaires serveur doivent toujours valider ce qu'ils reçoivent : le client ment.
+-- Veredarius: network.
+-- Named client-server communication, with per-player rate limiting on the server.
+-- Server handlers must always validate what they receive: the client lies.
 --
--- Serveur :
---   Veredarius.servir(nom, fn(joueur, ...) -> reponse)    requête / réponse
---   Veredarius.envoyer(nom, joueur, ...)                   serveur -> un client
---   Veredarius.envoyerA(nom, joueurs, ...)                 serveur -> plusieurs clients
---   Veredarius.envoyerATous(nom, ...)                      serveur -> tous les clients
--- Client :
---   Veredarius.demander(nom, ...) -> reponse
---   Veredarius.surReception(nom, fn(...))
+-- Server:
+--   Veredarius.serve(name, fn(player, ...) -> response)    request / response
+--   Veredarius.send(name, player, ...)                     server -> one client
+--   Veredarius.sendTo(name, players, ...)                  server -> several clients
+--   Veredarius.sendToAll(name, ...)                       server -> all clients
+-- Client:
+--   Veredarius.request(name, ...) -> response
+--   Veredarius.onReceive(name, fn(...))
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -19,138 +19,138 @@ local RunService = game:GetService("RunService")
 local Signum = require(script.Parent.Signum)
 local Scriba = require(script.Parent.Scriba)
 
-local journal = Scriba.pour("Veredarius")
+local logger = Scriba.scoped("Veredarius")
 
-local NOM_DOSSIER = "ImperiumVeredarius"
-local EST_SERVEUR = RunService:IsServer()
+local FOLDER_NAME = "ImperiumVeredarius"
+local IS_SERVER = RunService:IsServer()
 
--- Seau à jetons : CAPACITE requêtes d'un coup, puis RECHARGE par seconde.
-local CAPACITE = 15
-local RECHARGE = 6
+-- Token bucket: CAPACITY requests at once, then REFILL per second.
+local CAPACITY = 15
+local REFILL = 6
 
 local Veredarius = {}
 
-local function dossier(): Folder
-	if EST_SERVEUR then
-		local existant = ReplicatedStorage:FindFirstChild(NOM_DOSSIER)
-		if existant then
-			return existant :: Folder
+local function folder(): Folder
+	if IS_SERVER then
+		local existing = ReplicatedStorage:FindFirstChild(FOLDER_NAME)
+		if existing then
+			return existing :: Folder
 		end
-		local nouveau = Instance.new("Folder")
-		nouveau.Name = NOM_DOSSIER
-		nouveau.Parent = ReplicatedStorage
-		return nouveau
+		local fresh = Instance.new("Folder")
+		fresh.Name = FOLDER_NAME
+		fresh.Parent = ReplicatedStorage
+		return fresh
 	end
-	return ReplicatedStorage:WaitForChild(NOM_DOSSIER) :: Folder
+	return ReplicatedStorage:WaitForChild(FOLDER_NAME) :: Folder
 end
 
-local function distant(nom: string, classe: "RemoteFunction" | "RemoteEvent"): any
-	local parent = dossier()
-	local cle = `{classe == "RemoteFunction" and "F" or "E"}:{nom}`
-	if EST_SERVEUR then
-		local existant = parent:FindFirstChild(cle)
-		if existant then
-			return existant
+local function remote(name: string, className: "RemoteFunction" | "RemoteEvent"): any
+	local parent = folder()
+	local key = `{className == "RemoteFunction" and "F" or "E"}:{name}`
+	if IS_SERVER then
+		local existing = parent:FindFirstChild(key)
+		if existing then
+			return existing
 		end
-		local nouveau = Instance.new(classe)
-		nouveau.Name = cle
-		nouveau.Parent = parent
-		return nouveau
+		local fresh = Instance.new(className)
+		fresh.Name = key
+		fresh.Parent = parent
+		return fresh
 	end
-	return parent:WaitForChild(cle)
+	return parent:WaitForChild(key)
 end
 
--- Limitation de débit -----------------------------------------------------
+-- Rate limiting -----------------------------------------------------
 
-local seaux: { [Player]: { [string]: { jetons: number, maj: number } } } = {}
+local buckets: { [Player]: { [string]: { tokens: number, update: number } } } = {}
 
-local function autoriser(joueur: Player, nom: string): boolean
-	local parJoueur = seaux[joueur]
-	if not parJoueur then
-		parJoueur = {}
-		seaux[joueur] = parJoueur
+local function allow(player: Player, name: string): boolean
+	local perPlayer = buckets[player]
+	if not perPlayer then
+		perPlayer = {}
+		buckets[player] = perPlayer
 	end
-	local maintenant = os.clock()
-	local seau = parJoueur[nom]
-	if not seau then
-		seau = { jetons = CAPACITE, maj = maintenant }
-		parJoueur[nom] = seau
+	local now = os.clock()
+	local bucket = perPlayer[name]
+	if not bucket then
+		bucket = { tokens = CAPACITY, update = now }
+		perPlayer[name] = bucket
 	end
-	seau.jetons = math.min(CAPACITE, seau.jetons + (maintenant - seau.maj) * RECHARGE)
-	seau.maj = maintenant
-	if seau.jetons < 1 then
-		-- Lictor pourra écouter cet événement pour noter les abus.
-		Signum.emit("veredarius.abus", joueur, nom)
+	bucket.tokens = math.min(CAPACITY, bucket.tokens + (now - bucket.update) * REFILL)
+	bucket.update = now
+	if bucket.tokens < 1 then
+		-- Lictor can listen to this event to record abuse.
+		Signum.emit("veredarius.abuse", player, name)
 		return false
 	end
-	seau.jetons -= 1
+	bucket.tokens -= 1
 	return true
 end
 
-if EST_SERVEUR then
-	Players.PlayerRemoving:Connect(function(joueur)
-		seaux[joueur] = nil
+if IS_SERVER then
+	Players.PlayerRemoving:Connect(function(player)
+		buckets[player] = nil
 	end)
 end
 
--- Serveur ----------------------------------------------------------------
+-- Server ----------------------------------------------------------------
 
-function Veredarius.servir(nom: string, gestionnaire: (Player, ...any) -> any)
-	assert(EST_SERVEUR, "Veredarius.servir est réservé au serveur")
-	local fonction = distant(nom, "RemoteFunction") :: RemoteFunction
-	fonction.OnServerInvoke = function(joueur: Player, ...: any)
-		if not autoriser(joueur, nom) then
-			return { ok = false, erreur = "trop_de_requetes" }
+function Veredarius.serve(name: string, handler: (Player, ...any) -> any)
+	assert(IS_SERVER, "Veredarius.serve is server-only")
+	local remoteFunction = remote(name, "RemoteFunction") :: RemoteFunction
+	remoteFunction.OnServerInvoke = function(player: Player, ...: any)
+		if not allow(player, name) then
+			return { ok = false, err = "rate_limited" }
 		end
-		local ok, reponse = pcall(gestionnaire, joueur, ...)
+		local ok, response = pcall(handler, player, ...)
 		if not ok then
-			journal.erreur(`"{nom}" a échoué pour {joueur.Name} :`, reponse)
-			return { ok = false, erreur = "erreur_interne" }
+			logger.err(`"{name}" failed for {player.Name}:`, response)
+			return { ok = false, err = "internal_error" }
 		end
-		return reponse
+		return response
 	end
 end
 
-function Veredarius.envoyer(nom: string, joueur: Player, ...: any)
-	assert(EST_SERVEUR, "Veredarius.envoyer est réservé au serveur");
-	(distant(nom, "RemoteEvent") :: RemoteEvent):FireClient(joueur, ...)
+function Veredarius.send(name: string, player: Player, ...: any)
+	assert(IS_SERVER, "Veredarius.send is server-only");
+	(remote(name, "RemoteEvent") :: RemoteEvent):FireClient(player, ...)
 end
 
-function Veredarius.envoyerA(nom: string, joueurs: { Player }, ...: any)
-	assert(EST_SERVEUR, "Veredarius.envoyerA est réservé au serveur")
-	local evenement = distant(nom, "RemoteEvent") :: RemoteEvent
-	for _, joueur in joueurs do
-		evenement:FireClient(joueur, ...)
+function Veredarius.sendTo(name: string, players: { Player }, ...: any)
+	assert(IS_SERVER, "Veredarius.sendTo is server-only")
+	local remoteEvent = remote(name, "RemoteEvent") :: RemoteEvent
+	for _, player in players do
+		remoteEvent:FireClient(player, ...)
 	end
 end
 
-function Veredarius.envoyerATous(nom: string, ...: any)
-	assert(EST_SERVEUR, "Veredarius.envoyerATous est réservé au serveur");
-	(distant(nom, "RemoteEvent") :: RemoteEvent):FireAllClients(...)
+function Veredarius.sendToAll(name: string, ...: any)
+	assert(IS_SERVER, "Veredarius.sendToAll is server-only");
+	(remote(name, "RemoteEvent") :: RemoteEvent):FireAllClients(...)
 end
 
--- Déclare un canal serveur -> client à l'avance, pour que les clients puissent l'attendre.
-function Veredarius.declarer(nom: string)
-	assert(EST_SERVEUR, "Veredarius.declarer est réservé au serveur")
-	distant(nom, "RemoteEvent")
+-- Declares a server -> client channel in advance, so clients can wait for it.
+function Veredarius.declare(name: string)
+	assert(IS_SERVER, "Veredarius.declare is server-only")
+	remote(name, "RemoteEvent")
 end
 
 -- Client -----------------------------------------------------------------
 
-function Veredarius.demander(nom: string, ...: any): any
-	assert(not EST_SERVEUR, "Veredarius.demander est réservé au client")
-	local fonction = distant(nom, "RemoteFunction") :: RemoteFunction
-	local ok, reponse = pcall(fonction.InvokeServer, fonction, ...)
+function Veredarius.request(name: string, ...: any): any
+	assert(not IS_SERVER, "Veredarius.request is client-only")
+	local remoteFunction = remote(name, "RemoteFunction") :: RemoteFunction
+	local ok, response = pcall(remoteFunction.InvokeServer, remoteFunction, ...)
 	if not ok then
-		journal.avertissement(`"{nom}" sans réponse :`, reponse)
-		return { ok = false, erreur = "reseau" }
+		logger.warning(`"{name}" got no response:`, response)
+		return { ok = false, err = "network" }
 	end
-	return reponse
+	return response
 end
 
-function Veredarius.surReception(nom: string, fn: (...any) -> ()): RBXScriptConnection
-	assert(not EST_SERVEUR, "Veredarius.surReception est réservé au client")
-	return (distant(nom, "RemoteEvent") :: RemoteEvent).OnClientEvent:Connect(fn)
+function Veredarius.onReceive(name: string, fn: (...any) -> ()): RBXScriptConnection
+	assert(not IS_SERVER, "Veredarius.onReceive is client-only")
+	return (remote(name, "RemoteEvent") :: RemoteEvent).OnClientEvent:Connect(fn)
 end
 
 return Veredarius

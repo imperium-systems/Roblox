@@ -1,23 +1,26 @@
 {
-  "name": "Imperium",
+  "name": "ImperiumJeu",
   "tree": {
     "$className": "DataModel",
 
     "ReplicatedStorage": {
-      "Shared": {
-        "$path": "src/shared"
+      "ImperiumShared": {
+        "$path": "src/shared",
+        "README": {
+          "$path": "distribution/README.luau"
+        }
       }
     },
 
     "ServerScriptService": {
-      "Server": {
+      "ImperiumServer": {
         "$path": "src/server"
       }
     },
 
     "StarterPlayer": {
       "StarterPlayerScripts": {
-        "Client": {
+        "ImperiumClient": {
           "$path": "src/client"
         }
       }

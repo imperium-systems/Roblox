@@ -1,163 +1,163 @@
 --!strict
--- Censor — registre.
--- Tient la fiche de chaque joueur (première connexion, temps de jeu, pseudos, sanctions)
--- et le journal des actions du staff. Garantit la traçabilité.
--- Ne fait pas les logs techniques (Scriba).
+-- Censor: registry.
+-- Keeps each player's record (first join, playtime, usernames, sanctions)
+-- and the log of staff actions. Guarantees traceability.
+-- Does not handle technical logs (Scriba).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Signum = require(ReplicatedStorage.Shared.Imperium.Signum)
+local Signum = require(ReplicatedStorage.ImperiumShared.Imperium.Signum)
 
-local TAILLE_JOURNAL = 200
-local SANCTIONS_GARDEES = 50
+local LOG_SIZE = 200
+local MAX_SANCTIONS = 50
 
-export type Fiche = {
-	premiere: number,
-	derniere: number,
-	tempsJeu: number,
-	pseudos: { string },
+export type PlayerRecord = {
+	firstSeen: number,
+	lastSeen: number,
+	playtime: number,
+	usernames: { string },
 	sanctions: { Sanction },
 }
 
 export type Sanction = {
 	type: string,
-	raison: string,
-	par: string,
-	parId: number?,
+	reason: string,
+	by: string,
+	byId: number?,
 	date: number,
-	duree: number?,
+	duration: number?,
 }
 
-export type EntreeJournal = {
+export type LogEntry = {
 	date: number,
-	acteur: string,
-	acteurId: number,
+	actor: string,
+	actorId: number,
 	action: string,
-	cible: string?,
-	cibleId: number?,
+	target: string?,
+	targetId: number?,
 	details: string?,
 }
 
 local Censor = {
-	dependances = { "Tabularius" },
+	dependencies = { "Tabularius" },
 }
 
-local magasin: any
-local arrivees: { [Player]: number } = {}
+local keyStore: any
+local joinTimes: { [Player]: number } = {}
 
-local function ficheVide(): Fiche
+local function emptyRecord(): PlayerRecord
 	return {
-		premiere = os.time(),
-		derniere = os.time(),
-		tempsJeu = 0,
-		pseudos = {},
+		firstSeen = os.time(),
+		lastSeen = os.time(),
+		playtime = 0,
+		usernames = {},
 		sanctions = {},
 	}
 end
 
-function Censor.fiche(userId: number): Fiche?
-	local ok, fiche = magasin:lire(`joueur_{userId}`)
+function Censor.record(userId: number): PlayerRecord?
+	local ok, record = keyStore:read(`player_{userId}`)
 	if not ok then
 		return nil
 	end
-	return fiche
+	return record
 end
 
--- Ajoute une sanction à la fiche du joueur (appelé par Praetor).
-function Censor.noterSanction(userId: number, sanction: Sanction)
-	magasin:modifier(`joueur_{userId}`, function(fiche: Fiche?)
-		local f = fiche or ficheVide()
+-- Adds a sanction to the player's record (called by Praetor).
+function Censor.addSanction(userId: number, sanction: Sanction)
+	keyStore:update(`player_{userId}`, function(record: PlayerRecord?)
+		local f = record or emptyRecord()
 		table.insert(f.sanctions, sanction)
-		while #f.sanctions > SANCTIONS_GARDEES do
+		while #f.sanctions > MAX_SANCTIONS do
 			table.remove(f.sanctions, 1)
 		end
 		return f
 	end)
 end
 
--- Inscrit une action du staff au journal.
-function Censor.journaliser(acteur: Player, action: string, cible: { nom: string, userId: number }?, details: string?)
-	local entree: EntreeJournal = {
+-- Writes a staff action to the log.
+function Censor.logAction(actor: Player, action: string, target: { name: string, userId: number }?, details: string?)
+	local entry: LogEntry = {
 		date = os.time(),
-		acteur = acteur.Name,
-		acteurId = acteur.UserId,
+		actor = actor.Name,
+		actorId = actor.UserId,
 		action = action,
-		cible = cible and cible.nom,
-		cibleId = cible and cible.userId,
+		target = target and target.name,
+		targetId = target and target.userId,
 		details = details,
 	}
 	task.spawn(function()
-		magasin:modifier("journal", function(liste: { EntreeJournal }?)
-			local l = liste or {}
-			table.insert(l, entree)
-			while #l > TAILLE_JOURNAL do
+		keyStore:update("log", function(list: { LogEntry }?)
+			local l = list or {}
+			table.insert(l, entry)
+			while #l > LOG_SIZE do
 				table.remove(l, 1)
 			end
 			return l
 		end)
 	end)
-	Signum.emit("censor.entree", entree)
+	Signum.emit("censor.entry", entry)
 end
 
--- Entrées les plus récentes d'abord.
-function Censor.journal(limite: number?): { EntreeJournal }
-	local ok, liste = magasin:lire("journal")
-	if not ok or not liste then
+-- Most recent entries first.
+function Censor.getLog(limit: number?): { LogEntry }
+	local ok, list = keyStore:read("log")
+	if not ok or not list then
 		return {}
 	end
-	local resultat = {}
-	for i = #liste, math.max(1, #liste - (limite or TAILLE_JOURNAL) + 1), -1 do
-		table.insert(resultat, liste[i])
+	local result = {}
+	for i = #list, math.max(1, #list - (limit or LOG_SIZE) + 1), -1 do
+		table.insert(result, list[i])
 	end
-	return resultat
+	return result
 end
 
-function Censor.dureeSession(joueur: Player): number
-	local arrivee = arrivees[joueur]
-	return if arrivee then os.time() - arrivee else 0
+function Censor.sessionDuration(player: Player): number
+	local joinTime = joinTimes[player]
+	return if joinTime then os.time() - joinTime else 0
 end
 
--- Cycle de vie ---------------------------------------------------------------
+-- Lifecycle ---------------------------------------------------------------
 
-local function surArrivee(joueur: Player)
-	arrivees[joueur] = os.time()
-	magasin:modifier(`joueur_{joueur.UserId}`, function(fiche: Fiche?)
-		local f = fiche or ficheVide()
-		f.derniere = os.time()
-		if f.pseudos[#f.pseudos] ~= joueur.Name then
-			table.insert(f.pseudos, joueur.Name)
+local function onPlayerAdded(player: Player)
+	joinTimes[player] = os.time()
+	keyStore:update(`player_{player.UserId}`, function(record: PlayerRecord?)
+		local f = record or emptyRecord()
+		f.lastSeen = os.time()
+		if f.usernames[#f.usernames] ~= player.Name then
+			table.insert(f.usernames, player.Name)
 		end
 		return f
 	end)
 end
 
-local function surDepart(joueur: Player)
-	local duree = Censor.dureeSession(joueur)
-	arrivees[joueur] = nil
-	magasin:modifier(`joueur_{joueur.UserId}`, function(fiche: Fiche?)
-		local f = fiche or ficheVide()
-		f.tempsJeu += duree
-		f.derniere = os.time()
+local function onPlayerRemoving(player: Player)
+	local duration = Censor.sessionDuration(player)
+	joinTimes[player] = nil
+	keyStore:update(`player_{player.UserId}`, function(record: PlayerRecord?)
+		local f = record or emptyRecord()
+		f.playtime += duration
+		f.lastSeen = os.time()
 		return f
 	end)
 end
 
 function Censor.init(deps)
-	magasin = deps.Tabularius.magasin("Censor")
+	keyStore = deps.Tabularius.keyStore("Censor")
 end
 
-function Censor.demarrer()
-	Players.PlayerAdded:Connect(surArrivee)
-	for _, joueur in Players:GetPlayers() do
-		task.spawn(surArrivee, joueur)
+function Censor.start()
+	Players.PlayerAdded:Connect(onPlayerAdded)
+	for _, player in Players:GetPlayers() do
+		task.spawn(onPlayerAdded, player)
 	end
-	Players.PlayerRemoving:Connect(surDepart)
+	Players.PlayerRemoving:Connect(onPlayerRemoving)
 end
 
-function Censor.arreter()
-	for _, joueur in Players:GetPlayers() do
-		surDepart(joueur)
+function Censor.stop()
+	for _, player in Players:GetPlayers() do
+		onPlayerRemoving(player)
 	end
 end
 

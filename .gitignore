@@ -6,3 +6,6 @@
 /*.rbxl.lock
 
 sourcemap.json
+
+# Modèle généré par rojo build
+/dist/

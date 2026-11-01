@@ -1,190 +1,190 @@
 --!strict
--- Praefectus — opérations sur les serveurs en cours.
--- Annonces de maintenance, verrouillage de l'accès, redémarrage avec compte à rebours,
--- sur ce serveur ou sur tous.
--- Ne crée pas les serveurs et ne place pas les joueurs (Hospes, Lanista).
+-- Praefectus: operations on running servers.
+-- Maintenance announcements, access locking, restart with a countdown,
+-- on this server or on all of them.
+-- Does not create servers or place players (Hospes, Lanista).
 
 local MessagingService = game:GetService("MessagingService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Imperium = ReplicatedStorage.Shared.Imperium
+local Imperium = ReplicatedStorage.ImperiumShared.Imperium
 local Core = require(Imperium.Core)
 local Scriba = require(Imperium.Scriba)
 local Signum = require(Imperium.Signum)
 
-local journal = Scriba.pour("Praefectus")
+local logger = Scriba.scoped("Praefectus")
 
-local SUJET = "Imperium_Praefectus"
--- Les dernières secondes sont suivies par le rappel permanent de Praeco.
-local PALIERS = { 300, 120, 60, 30, 15, 10 }
+local TOPIC = "Imperium_Praefectus"
+-- The last seconds are covered by the permanent Praeco reminder.
+local THRESHOLDS = { 300, 120, 60, 30, 15, 10 }
 
 local Praefectus = {
-	dependances = { "Senatus", "Praeco", "Lex" },
+	dependencies = { "Senatus", "Praeco", "Lex" },
 }
 
 local Senatus: any
 local Praeco: any
 local Lex: any
 
-local verrouille = false
-local demarrage = os.time()
-local compteARebours: { fin: number, raison: string, jeton: {} }? = nil
+local locked = false
+local startedAt = os.time()
+local countdown: { expiresAt: number, reason: string, token: {} }? = nil
 
-local function changement()
-	Signum.emit("praefectus.etat", Praefectus.etat())
+local function notifyChanged()
+	Signum.emit("praefectus.state", Praefectus.state())
 end
 
 -- API ---------------------------------------------------------------------------
 
-function Praefectus.etat()
+function Praefectus.state()
 	return {
-		verrouille = verrouille,
-		joueurs = #Players:GetPlayers(),
+		locked = locked,
+		players = #Players:GetPlayers(),
 		max = Players.MaxPlayers,
 		jobId = if game.JobId == "" then "studio" else game.JobId,
 		version = game.PlaceVersion,
-		demarrage = demarrage,
-		redemarrage = compteARebours and { fin = compteARebours.fin, raison = compteARebours.raison },
+		startedAt = startedAt,
+		restart = countdown and { expiresAt = countdown.expiresAt, reason = countdown.reason },
 	}
 end
 
-function Praefectus.verrouiller(etat: boolean)
-	verrouille = etat
-	journal.info(if etat then "serveur verrouillé" else "serveur déverrouillé")
-	changement()
+function Praefectus.lock(state: boolean)
+	locked = state
+	logger.info(if state then "server locked" else "server unlocked")
+	notifyChanged()
 end
 
-function Praefectus.estVerrouille(): boolean
-	return verrouille
+function Praefectus.isLocked(): boolean
+	return locked
 end
 
--- Lance un compte à rebours puis vide le serveur. Le serveur se ferme une fois vide.
-function Praefectus.redemarrer(delai: number, raison: string): (boolean, string?)
-	if compteARebours then
-		return false, "deja_en_cours"
+-- Starts a countdown, then empties the server. The server closes once empty.
+function Praefectus.restart(delaySeconds: number, reason: string): (boolean, string?)
+	if countdown then
+		return false, "already_running"
 	end
-	local jeton = {}
-	compteARebours = { fin = os.time() + delai, raison = raison, jeton = jeton }
-	Praeco.rappel({ texte = "Redémarrage du serveur dans", fin = compteARebours.fin })
-	changement()
+	local token = {}
+	countdown = { expiresAt = os.time() + delaySeconds, reason = reason, token = token }
+	Praeco.reminder({ text = "Server restarting in", expiresAt = countdown.expiresAt })
+	notifyChanged()
 
-	local function enCours()
-		return compteARebours ~= nil and compteARebours.jeton == jeton
+	local function running()
+		return countdown ~= nil and countdown.token == token
 	end
 
 	task.spawn(function()
-		local annonces: { [number]: boolean } = {}
-		local premier = true
-		while enCours() do
-			local reste = (compteARebours :: any).fin - os.time()
-			if reste <= 0 then
+		local announced: { [number]: boolean } = {}
+		local first = true
+		while running() do
+			local remaining = (countdown :: any).expiresAt - os.time()
+			if remaining <= 0 then
 				break
 			end
-			-- Annonce au départ, puis à chaque palier franchi.
-			local franchi = false
-			for _, palier in PALIERS do
-				if reste <= palier and not annonces[palier] then
-					annonces[palier] = true
-					franchi = true
+			-- Announces at the start, then at each threshold crossed.
+			local crossed = false
+			for _, threshold in THRESHOLDS do
+				if remaining <= threshold and not announced[threshold] then
+					announced[threshold] = true
+					crossed = true
 				end
 			end
-			if premier or franchi then
-				premier = false
-				Praeco.annoncer({
-					genre = "maintenance",
-					titre = "Redémarrage du serveur",
-					texte = `{raison} dans {Core.formaterCompte(reste)}`,
-					duree = math.min(8, reste),
+			if first or crossed then
+				first = false
+				Praeco.announce({
+					kind = "maintenance",
+					title = "Server restart",
+					text = `{reason} in {Core.formatCountdown(remaining)}`,
+					duration = math.min(8, remaining),
 				})
 			end
 			task.wait(1)
 		end
-		if not enCours() then
+		if not running() then
 			return
 		end
-		verrouille = true
-		for _, joueur in Players:GetPlayers() do
-			joueur:Kick(`Le serveur redémarre : {raison}\nReconnecte-toi dans un instant.`)
+		locked = true
+		for _, player in Players:GetPlayers() do
+			player:Kick(`The server is restarting: {reason}\nReconnect in a moment.`)
 		end
 	end)
 	return true
 end
 
-function Praefectus.annulerRedemarrage(): boolean
-	if not compteARebours then
+function Praefectus.cancelRestart(): boolean
+	if not countdown then
 		return false
 	end
-	compteARebours = nil
-	Praeco.retirerRappel()
-	Praeco.annoncer({ genre = "succes", titre = "Redémarrage annulé", texte = "Le serveur reste en ligne.", duree = 6 })
-	changement()
+	countdown = nil
+	Praeco.removeReminder()
+	Praeco.announce({ kind = "success", title = "Restart cancelled", text = "The server stays online.", duration = 6 })
+	notifyChanged()
 	return true
 end
 
--- Envoie un ordre à tous les serveurs, y compris celui-ci.
-function Praefectus.ordonnerPartout(ordre: string, donnees: { [string]: any }): (boolean, string?)
-	local message = table.clone(donnees)
-	message.ordre = ordre
-	local ok, erreur = pcall(MessagingService.PublishAsync, MessagingService, SUJET, message)
+-- Sends an order to every server, including this one.
+function Praefectus.broadcastOrder(order: string, data: { [string]: any }): (boolean, string?)
+	local message = table.clone(data)
+	message.order = order
+	local ok, err = pcall(MessagingService.PublishAsync, MessagingService, TOPIC, message)
 	if not ok then
-		journal.avertissement("ordre inter-serveurs impossible :", erreur)
-		return false, "inter_serveurs"
+		logger.warning("cross-server order failed:", err)
+		return false, "cross_server"
 	end
 	return true
 end
 
-local function executerOrdre(message: any)
+local function executeOrder(message: any)
 	if type(message) ~= "table" then
 		return
 	end
-	if message.ordre == "redemarrer" and type(message.delai) == "number" and type(message.raison) == "string" then
-		Praefectus.redemarrer(math.clamp(message.delai, 5, 600), message.raison)
-	elseif message.ordre == "annuler" then
-		Praefectus.annulerRedemarrage()
-	elseif message.ordre == "verrouiller" and type(message.etat) == "boolean" then
-		Praefectus.verrouiller(message.etat)
+	if message.order == "restart" and type(message.delaySeconds) == "number" and type(message.reason) == "string" then
+		Praefectus.restart(math.clamp(message.delaySeconds, 5, 600), message.reason)
+	elseif message.order == "cancel" then
+		Praefectus.cancelRestart()
+	elseif message.order == "lock" and type(message.state) == "boolean" then
+		Praefectus.lock(message.state)
 	end
 end
 
--- Cycle de vie --------------------------------------------------------------------
+-- Lifecycle --------------------------------------------------------------------
 
 function Praefectus.init(deps)
 	Senatus = deps.Senatus
 	Praeco = deps.Praeco
 	Lex = deps.Lex
 
-	Lex.definir("praefectus.delai_redemarrage", {
-		defaut = 60,
+	Lex.define("praefectus.restart_delay", {
+		default = 60,
 		type = "number",
-		description = "Délai proposé par défaut avant un redémarrage, en secondes.",
+		description = "Default delay offered before a restart, in seconds.",
 		min = 5,
 		max = 600,
 	})
-	Lex.definir("praefectus.message_verrouille", {
-		defaut = "Ce serveur est en maintenance. Réessaie dans quelques minutes.",
+	Lex.define("praefectus.locked_message", {
+		default = "This server is under maintenance. Try again in a few minutes.",
 		type = "string",
-		description = "Message affiché aux joueurs refusés quand le serveur est verrouillé.",
+		description = "Message shown to players refused while the server is locked.",
 	})
 end
 
-function Praefectus.demarrer()
-	-- Le rang est calculé par Senatus à l'arrivée ; on attend son verdict.
-	Signum.on("senatus.rang", function(joueur: Player)
-		if verrouille and not Senatus.estStaff(joueur) then
-			joueur:Kick(Lex.get("praefectus.message_verrouille"))
+function Praefectus.start()
+	-- Senatus computes the rank on arrival; wait for its verdict.
+	Signum.on("senatus.rank", function(player: Player)
+		if locked and not Senatus.isStaff(player) then
+			player:Kick(Lex.get("praefectus.locked_message"))
 		end
 	end)
-	Players.PlayerAdded:Connect(changement)
+	Players.PlayerAdded:Connect(notifyChanged)
 	Players.PlayerRemoving:Connect(function()
-		task.defer(changement)
+		task.defer(notifyChanged)
 	end)
 
-	local ok, erreur = pcall(MessagingService.SubscribeAsync, MessagingService, SUJET, function(message)
-		executerOrdre(message.Data)
+	local ok, err = pcall(MessagingService.SubscribeAsync, MessagingService, TOPIC, function(message)
+		executeOrder(message.Data)
 	end)
 	if not ok then
-		journal.avertissement("abonnement inter-serveurs impossible :", erreur)
+		logger.warning("cross-server subscription failed:", err)
 	end
 end
 

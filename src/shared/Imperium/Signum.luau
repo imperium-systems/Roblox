@@ -1,49 +1,49 @@
 --!strict
--- Signum — bus d'événements.
--- Un système émet, ceux que ça intéresse s'abonnent, sans que l'émetteur sache qui écoute.
--- Local à une machine : pour traverser le réseau, voir Veredarius.
+-- Signum: event bus.
+-- A system emits, interested systems subscribe, and the emitter does not know who listens.
+-- Local to one machine: to cross the network, see Veredarius.
 
-type Ecouteur = {
+type Listener = {
 	fn: (...any) -> (),
-	priorite: number,
+	priority: number,
 }
 
 local Signum = {}
 
-local ecouteurs: { [string]: { Ecouteur } } = {}
+local listeners: { [string]: { Listener } } = {}
 
--- S'abonne à un événement. Les priorités élevées sont appelées en premier.
--- Renvoie une fonction de désabonnement.
-function Signum.on(nom: string, fn: (...any) -> (), priorite: number?): () -> ()
-	local liste = ecouteurs[nom]
-	if not liste then
-		liste = {}
-		ecouteurs[nom] = liste
+-- Subscribes to an event. Higher priorities are called first.
+-- Returns an unsubscribe function.
+function Signum.on(name: string, fn: (...any) -> (), priority: number?): () -> ()
+	local list = listeners[name]
+	if not list then
+		list = {}
+		listeners[name] = list
 	end
-	local ecouteur: Ecouteur = { fn = fn, priorite = priorite or 0 }
-	table.insert(liste, ecouteur)
-	table.sort(liste, function(a, b)
-		return a.priorite > b.priorite
+	local listener: Listener = { fn = fn, priority = priority or 0 }
+	table.insert(list, listener)
+	table.sort(list, function(a, b)
+		return a.priority > b.priority
 	end)
 
 	return function()
-		local index = table.find(liste, ecouteur)
+		local index = table.find(list, listener)
 		if index then
-			table.remove(liste, index)
+			table.remove(list, index)
 		end
 	end
 end
 
--- Émet un événement. Une erreur dans un écouteur n'empêche pas les suivants d'être appelés.
-function Signum.emit(nom: string, ...: any)
-	local liste = ecouteurs[nom]
-	if not liste then
+-- Emits an event. An error in one listener does not prevent the next ones from running.
+function Signum.emit(name: string, ...: any)
+	local list = listeners[name]
+	if not list then
 		return
 	end
-	for _, ecouteur in table.clone(liste) do
-		local ok, erreur = pcall(ecouteur.fn, ...)
+	for _, listener in table.clone(list) do
+		local ok, err = pcall(listener.fn, ...)
 		if not ok then
-			warn(`[Signum] écouteur de "{nom}" en erreur : {erreur}`)
+			warn(`[Signum] listener of "{name}" failed: {err}`)
 		end
 	end
 end

@@ -1,110 +1,110 @@
 --!strict
--- Conditor — démarrage.
--- Lance les systèmes dans l'ordre de leurs dépendances, injecte à chacun les systèmes
--- dont il a besoin, détecte les cycles et les absents, et gère l'arrêt propre.
+-- Conditor: startup.
+-- Starts systems in dependency order, injects into each one the systems
+-- it needs, detects cycles and missing systems, and handles clean shutdown.
 --
--- Un système est un ModuleScript qui renvoie une table pouvant contenir :
---   dependances : { string }            noms des systèmes requis (nom du ModuleScript)
---   init(deps)                           appelé dans l'ordre, deps[nom] = système
---   demarrer()                           appelé une fois tous les init() terminés
---   arreter()                            appelé à la fermeture du serveur, en ordre inverse
+-- A system is a ModuleScript returning a table that may contain:
+--   dependencies: { string }            names of required systems (ModuleScript name)
+--   init(deps)                           called in order, deps[name] = system
+--   start()                              called once all init() calls are done
+--   stop()                               called when the server closes, in reverse order
 --
--- Les bibliothèques sans état de Core (Core, Signum, Scriba) et Veredarius
--- sont requises directement, elles ne passent pas par Conditor.
+-- The stateless Core libraries (Core, Signum, Scriba) and Veredarius
+-- are required directly and do not go through Conditor.
 
 local RunService = game:GetService("RunService")
 
 local Scriba = require(script.Parent.Scriba)
 
-local journal = Scriba.pour("Conditor")
+local logger = Scriba.scoped("Conditor")
 
-type Systeme = {
-	dependances: { string }?,
+type System = {
+	dependencies: { string }?,
 	init: ((deps: { [string]: any }) -> ())?,
-	demarrer: (() -> ())?,
-	arreter: (() -> ())?,
+	start: (() -> ())?,
+	stop: (() -> ())?,
 }
 
 local Conditor = {}
 
-function Conditor.lancer(modules: { ModuleScript })
-	local debut = os.clock()
-	local systemes: { [string]: Systeme } = {}
+function Conditor.run(modules: { ModuleScript })
+	local startTime = os.clock()
+	local systems: { [string]: System } = {}
 
 	for _, module in modules do
-		systemes[module.Name] = (require :: any)(module)
+		systems[module.Name] = (require :: any)(module)
 	end
 
-	-- Tri topologique (parcours en profondeur).
-	local ordre: { string } = {}
-	local etat: { [string]: "en_cours" | "fait" } = {}
+	-- Topological sort (depth-first traversal).
+	local order: { string } = {}
+	local state: { [string]: "visiting" | "done" } = {}
 
-	local function visiter(nom: string, chemin: { string })
-		if etat[nom] == "fait" then
+	local function visit(name: string, path: { string })
+		if state[name] == "done" then
 			return
 		end
-		if etat[nom] == "en_cours" then
-			table.insert(chemin, nom)
-			error(`[Conditor] dépendance circulaire : {table.concat(chemin, " → ")}`, 0)
+		if state[name] == "visiting" then
+			table.insert(path, name)
+			error(`[Conditor] circular dependency: {table.concat(path, " → ")}`, 0)
 		end
-		local systeme = systemes[nom]
-		if not systeme then
-			error(`[Conditor] système manquant : "{nom}" (requis par {chemin[#chemin] or "?"})`, 0)
+		local system = systems[name]
+		if not system then
+			error(`[Conditor] missing system: "{name}" (required by {path[#path] or "?"})`, 0)
 		end
-		etat[nom] = "en_cours"
-		table.insert(chemin, nom)
-		for _, dep in systeme.dependances or {} do
-			visiter(dep, chemin)
+		state[name] = "visiting"
+		table.insert(path, name)
+		for _, dep in system.dependencies or {} do
+			visit(dep, path)
 		end
-		table.remove(chemin)
-		etat[nom] = "fait"
-		table.insert(ordre, nom)
+		table.remove(path)
+		state[name] = "done"
+		table.insert(order, name)
 	end
 
 	for _, module in modules do
-		visiter(module.Name, {})
+		visit(module.Name, {})
 	end
 
-	for _, nom in ordre do
-		local systeme = systemes[nom]
-		if systeme.init then
+	for _, name in order do
+		local system = systems[name]
+		if system.init then
 			local deps = {}
-			for _, dep in systeme.dependances or {} do
-				deps[dep] = systemes[dep]
+			for _, dep in system.dependencies or {} do
+				deps[dep] = systems[dep]
 			end
-			systeme.init(deps)
+			system.init(deps)
 		end
 	end
 
-	for _, nom in ordre do
-		local systeme = systemes[nom]
-		if systeme.demarrer then
-			local ok, erreur = pcall(systeme.demarrer)
+	for _, name in order do
+		local system = systems[name]
+		if system.start then
+			local ok, err = pcall(system.start)
 			if not ok then
-				journal.erreur(`{nom}.demarrer a échoué :`, erreur)
+				logger.err(`{name}.start failed:`, err)
 			end
 		end
 	end
 
 	if RunService:IsServer() then
 		game:BindToClose(function()
-			for i = #ordre, 1, -1 do
-				local systeme = systemes[ordre[i]]
-				if systeme.arreter then
-					local ok, erreur = pcall(systeme.arreter)
+			for i = #order, 1, -1 do
+				local system = systems[order[i]]
+				if system.stop then
+					local ok, err = pcall(system.stop)
 					if not ok then
-						journal.erreur(`{ordre[i]}.arreter a échoué :`, erreur)
+						logger.err(`{order[i]}.stop failed:`, err)
 					end
 				end
 			end
 		end)
 	end
 
-	journal.info(
-		`{#ordre} systèmes démarrés en {math.round((os.clock() - debut) * 1000)} ms : {table.concat(ordre, ", ")}`
+	logger.info(
+		`{#order} systems started in {math.round((os.clock() - startTime) * 1000)} ms: {table.concat(order, ", ")}`
 	)
 
-	return systemes
+	return systems
 end
 
 return Conditor
