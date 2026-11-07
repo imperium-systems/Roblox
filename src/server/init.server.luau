@@ -1,23 +1,34 @@
--- Point d'entrée serveur d'Imperium.
--- L'ordre de la liste n'a pas d'importance : Conditor trie selon les dépendances déclarées.
+-- Imperium server entry point.
+-- List order does not matter: Conditor sorts by declared dependencies.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
-local Conditor = require(ReplicatedStorage.Shared.Imperium.Conditor)
+-- The Toolbox model is ungrouped by hand: a misplaced folder must show up immediately.
+if script.Parent ~= ServerScriptService then
+	warn("[Imperium] ImperiumServer must be in ServerScriptService. See README in the model.")
+	return
+end
+if not ReplicatedStorage:FindFirstChild("ImperiumShared") then
+	warn("[Imperium] ImperiumShared was not found in ReplicatedStorage. See README in the model.")
+	return
+end
 
-local systemes = script.Imperium
+local Conditor = require(ReplicatedStorage.ImperiumShared.Imperium.Conditor)
 
-Conditor.lancer({
+local systems = script.Imperium
+
+Conditor.run({
 	-- Viae
-	systemes.Tabularius,
+	systems.Tabularius,
 	-- Core
-	systemes.Lex,
+	systems.Lex,
 	-- Forum
-	systemes.Praeco,
+	systems.Praeco,
 	-- Curia
-	systemes.Senatus,
-	systemes.Censor,
-	systemes.Praetor,
-	systemes.Praefectus,
-	systemes.Consul,
+	systems.Senatus,
+	systems.Censor,
+	systems.Praetor,
+	systems.Praefectus,
+	systems.Consul,
 })

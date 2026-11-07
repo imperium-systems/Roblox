@@ -1,25 +1,25 @@
 --!strict
--- Consul — panneau admin, côté serveur.
--- Point d'entrée unique des requêtes du panneau : valide chaque requête, vérifie la permission
--- auprès de Senatus, puis délègue au système responsable (Praetor, Praefectus, Lex, Censor).
--- N'exécute pas lui-même les sanctions ni les opérations serveur.
--- Toute action du staff est inscrite au journal de Censor.
+-- Consul: admin panel, server side.
+-- Single entry point for panel requests: validates each request, checks the permission
+-- with Senatus, then delegates to the responsible system (Praetor, Praefectus, Lex, Censor).
+-- Does not perform sanctions or server operations itself.
+-- Every staff action is written to the Censor log.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TextService = game:GetService("TextService")
 
-local Imperium = ReplicatedStorage.Shared.Imperium
+local Imperium = ReplicatedStorage.ImperiumShared.Imperium
 local Core = require(Imperium.Core)
 local Scriba = require(Imperium.Scriba)
 local Signum = require(Imperium.Signum)
 local Veredarius = require(Imperium.Veredarius)
 
-local journal = Scriba.pour("Consul")
+local logger = Scriba.scoped("Consul")
 
 local Consul = {
-	dependances = { "Senatus", "Praetor", "Praefectus", "Censor", "Lex", "Praeco" },
+	dependencies = { "Senatus", "Praetor", "Praefectus", "Censor", "Lex", "Praeco" },
 }
 
 local Senatus: any
@@ -29,122 +29,122 @@ local Censor: any
 local Lex: any
 local Praeco: any
 
-type Reponse = { [string]: any }
+type Response = { [string]: any }
 type Action = {
 	permission: string,
-	executer: (acteur: Player, donnees: { [string]: any }) -> Reponse,
+	execute: (actor: Player, data: { [string]: any }) -> Response,
 }
 
-local function echec(code: string): Reponse
-	return { ok = false, erreur = code }
+local function failure(code: string): Response
+	return { ok = false, err = code }
 end
 
-local function succes(donnees: Reponse?): Reponse
-	local r = donnees or {}
+local function success(data: Response?): Response
+	local r = data or {}
 	r.ok = true
 	return r
 end
 
--- Tout texte libre du staff passe par le filtre de Roblox avant d'être montré à d'autres.
-local function filtrer(texte: string, auteur: Player): string?
-	local ok, resultat = pcall(function()
-		local filtre = TextService:FilterStringAsync(texte, auteur.UserId)
-		return filtre:GetNonChatStringForBroadcastAsync()
+-- All free text from staff goes through the Roblox filter before others see it.
+local function filterText(text: string, author: Player): string?
+	local ok, result = pcall(function()
+		local filter = TextService:FilterStringAsync(text, author.UserId)
+		return filter:GetNonChatStringForBroadcastAsync()
 	end)
 	if not ok then
-		-- En Studio, le filtre refuse souvent les joueurs de test : on laisse passer.
+		-- In Studio, the filter often rejects test players: let the text through.
 		if RunService:IsStudio() then
-			return texte
+			return text
 		end
-		journal.avertissement("filtrage impossible :", resultat)
+		logger.warning("text filtering failed:", result)
 		return nil
 	end
-	return resultat
+	return result
 end
 
-local function nomDe(userId: number): string
-	local joueur = Players:GetPlayerByUserId(userId)
-	if joueur then
-		return joueur.Name
+local function nameOf(userId: number): string
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		return player.Name
 	end
-	local ok, nom = pcall(Players.GetNameFromUserIdAsync, Players, userId)
-	return if ok then nom else `#{userId}`
+	local ok, name = pcall(Players.GetNameFromUserIdAsync, Players, userId)
+	return if ok then name else `#{userId}`
 end
 
--- Lit et vérifie les champs communs aux sanctions : cible, motif filtré, durée.
-local function lireSanction(
-	acteur: Player,
+-- Reads and validates the fields shared by sanctions: target, filtered reason, duration.
+local function readSanction(
+	actor: Player,
 	d: { [string]: any },
-	avecDuree: boolean
-): (Reponse?, number?, string?, number?)
-	if not Core.estUserId(d.userId) then
-		return echec("joueur_introuvable")
+	withDuration: boolean
+): (Response?, number?, string?, number?)
+	if not Core.isUserId(d.userId) then
+		return failure("player_not_found")
 	end
-	if not Senatus.peutAgirSur(acteur, d.userId) then
-		return echec("rang_insuffisant")
+	if not Senatus.canActOn(actor, d.userId) then
+		return failure("insufficient_rank")
 	end
-	local raison = "—"
-	if d.raison ~= nil then
-		if not Core.estTexte(d.raison, 200) then
-			return echec("texte_invalide")
+	local reason = "—"
+	if d.reason ~= nil then
+		if not Core.isText(d.reason, 200) then
+			return failure("invalid_text")
 		end
-		if string.match(d.raison, "%S") then
-			local filtre = filtrer(d.raison, acteur)
-			if not filtre then
-				return echec("filtrage_echoue")
+		if string.match(d.reason, "%S") then
+			local filter = filterText(d.reason, actor)
+			if not filter then
+				return failure("filtering_failed")
 			end
-			raison = filtre
+			reason = filter
 		end
 	end
-	local duree: number? = nil
-	if avecDuree then
-		if not Core.estTexte(d.duree, 20) then
-			return echec("duree_invalide")
+	local duration: number? = nil
+	if withDuration then
+		if not Core.isText(d.duration, 20) then
+			return failure("invalid_duration")
 		end
-		local ok, secondes = Core.lireDuree(d.duree)
+		local ok, seconds = Core.parseDuration(d.duration)
 		if not ok then
-			return echec("duree_invalide")
+			return failure("invalid_duration")
 		end
-		duree = secondes
+		duration = seconds
 	end
-	return nil, d.userId, raison, duree
+	return nil, d.userId, reason, duration
 end
 
-local function resultatPraetor(
-	acteur: Player,
+local function praetorResult(
+	actor: Player,
 	action: string,
 	userId: number,
 	details: string,
 	ok: boolean,
-	erreur: string?
-): Reponse
+	err: string?
+): Response
 	if not ok then
-		return echec(erreur or "erreur_interne")
+		return failure(err or "internal_error")
 	end
-	Censor.journaliser(acteur, action, { nom = nomDe(userId), userId = userId }, details)
-	return succes()
+	Censor.logAction(actor, action, { name = nameOf(userId), userId = userId }, details)
+	return success()
 end
 
-local function personnage(joueur: Player): Model?
-	local modele = joueur.Character
-	if modele and modele.PrimaryPart then
-		return modele
+local function character(player: Player): Model?
+	local model = player.Character
+	if model and model.PrimaryPart then
+		return model
 	end
 	return nil
 end
 
--- Vue d'un joueur en ligne pour la liste du panneau.
-local function resumeJoueur(joueur: Player): Reponse
-	local rang = Senatus.rang(joueur)
+-- View of an online player for the panel list.
+local function playerSummary(player: Player): Response
+	local rank = Senatus.rank(player)
 	return {
-		userId = joueur.UserId,
-		nom = joueur.Name,
-		affichage = joueur.DisplayName,
-		rang = rang and rang.nom,
-		couleurRang = rang and rang.couleur,
-		niveau = Senatus.niveau(joueur),
-		muet = Praetor.estMuet(joueur),
-		session = Censor.dureeSession(joueur),
+		userId = player.UserId,
+		name = player.Name,
+		displayName = player.DisplayName,
+		rank = rank and rank.name,
+		rankColor = rank and rank.color,
+		level = Senatus.level(player),
+		muted = Praetor.isMuted(player),
+		session = Censor.sessionDuration(player),
 	}
 end
 
@@ -152,141 +152,141 @@ end
 
 local actions: { [string]: Action } = {}
 
-actions["acces"] = {
-	permission = "consul.ouvrir",
-	executer = function(acteur)
-		local rang = Senatus.rang(acteur)
-		return succes({
-			permissions = Senatus.permissionsDe(acteur),
-			rang = rang.nom,
-			couleurRang = rang.couleur,
-			niveau = rang.niveau,
+actions["access"] = {
+	permission = "consul.open",
+	execute = function(actor)
+		local rank = Senatus.rank(actor)
+		return success({
+			permissions = Senatus.permissionsOf(actor),
+			rank = rank.name,
+			rankColor = rank.color,
+			level = rank.level,
 			version = Core.VERSION,
-			reglages = {
-				dureeMute = Lex.get("praetor.duree_mute_defaut"),
-				dureeBan = Lex.get("praetor.duree_ban_defaut"),
-				delaiRedemarrage = Lex.get("praefectus.delai_redemarrage"),
+			settings = {
+				muteDuration = Lex.get("praetor.default_mute_duration"),
+				banDuration = Lex.get("praetor.default_ban_duration"),
+				restartDelay = Lex.get("praefectus.restart_delay"),
 			},
 		})
 	end,
 }
 
-actions["joueurs.liste"] = {
-	permission = "consul.ouvrir",
-	executer = function()
-		local liste = {}
-		for _, joueur in Players:GetPlayers() do
-			table.insert(liste, resumeJoueur(joueur))
+actions["players.list"] = {
+	permission = "consul.open",
+	execute = function()
+		local list = {}
+		for _, player in Players:GetPlayers() do
+			table.insert(list, playerSummary(player))
 		end
-		table.sort(liste, function(a, b)
-			return string.lower(a.nom) < string.lower(b.nom)
+		table.sort(list, function(a, b)
+			return string.lower(a.name) < string.lower(b.name)
 		end)
-		return succes({ joueurs = liste })
+		return success({ players = list })
 	end,
 }
 
-actions["joueurs.chercher"] = {
-	permission = "censor.consulter",
-	executer = function(_, d)
-		if not Core.estTexte(d.texte, 40) then
-			return echec("texte_invalide")
+actions["players.search"] = {
+	permission = "censor.view",
+	execute = function(_, d)
+		if not Core.isText(d.text, 40) then
+			return failure("invalid_text")
 		end
-		local texte = string.gsub(d.texte, "^%s*@?(.-)%s*$", "%1")
-		local userId = tonumber(texte)
+		local text = string.gsub(d.text, "^%s*@?(.-)%s*$", "%1")
+		local userId = tonumber(text)
 		if not userId then
-			local ok, resultat = pcall(Players.GetUserIdFromNameAsync, Players, texte)
+			local ok, result = pcall(Players.GetUserIdFromNameAsync, Players, text)
 			if not ok then
-				return echec("joueur_introuvable")
+				return failure("player_not_found")
 			end
-			userId = resultat
+			userId = result
 		end
-		if not Core.estUserId(userId) then
-			return echec("joueur_introuvable")
+		if not Core.isUserId(userId) then
+			return failure("player_not_found")
 		end
-		return succes({ userId = userId })
+		return success({ userId = userId })
 	end,
 }
 
-actions["joueurs.fiche"] = {
-	permission = "censor.consulter",
-	executer = function(acteur, d)
-		if not Core.estUserId(d.userId) then
-			return echec("joueur_introuvable")
+actions["players.record"] = {
+	permission = "censor.view",
+	execute = function(actor, d)
+		if not Core.isUserId(d.userId) then
+			return failure("player_not_found")
 		end
 		local userId = d.userId
-		local enLigne = Players:GetPlayerByUserId(userId)
-		local nom = nomDe(userId)
-		local fiche = Censor.fiche(userId)
-		-- Un joueur de test parti n'a plus de nom chez Roblox, mais sa fiche existe encore.
-		if not enLigne and not fiche and string.sub(nom, 1, 1) == "#" then
-			return echec("joueur_introuvable")
+		local online = Players:GetPlayerByUserId(userId)
+		local name = nameOf(userId)
+		local record = Censor.record(userId)
+		-- A test player who left no longer has a name on Roblox, but their record still exists.
+		if not online and not record and string.sub(name, 1, 1) == "#" then
+			return failure("player_not_found")
 		end
-		local etat = Praetor.etat(userId)
-		local rang = enLigne and Senatus.rang(enLigne)
+		local state = Praetor.state(userId)
+		local rank = online and Senatus.rank(online)
 
-		local ban = etat and etat.ban
-		local mute = etat and etat.mute
-		local maintenant = os.time()
-		local function siActif(m)
-			if m and (m.fin == nil or m.fin > maintenant) then
-				return { fin = m.fin, raison = m.raison, par = m.par, date = m.date }
+		local ban = state and state.ban
+		local mute = state and state.mute
+		local now = os.time()
+		local function ifActive(m)
+			if m and (m.expiresAt == nil or m.expiresAt > now) then
+				return { expiresAt = m.expiresAt, reason = m.reason, by = m.by, date = m.date }
 			end
 			return nil
 		end
 
 		local sanctions = {}
-		if fiche then
-			for i = #fiche.sanctions, 1, -1 do
-				table.insert(sanctions, fiche.sanctions[i])
+		if record then
+			for i = #record.sanctions, 1, -1 do
+				table.insert(sanctions, record.sanctions[i])
 			end
 		end
 
-		return succes({
+		return success({
 			userId = userId,
-			nom = nom,
-			affichage = if enLigne then enLigne.DisplayName else nil,
-			enLigne = enLigne ~= nil,
-			session = if enLigne then Censor.dureeSession(enLigne) else nil,
-			rang = rang and rang.nom,
-			couleurRang = rang and rang.couleur,
-			premiere = fiche and fiche.premiere,
-			derniere = fiche and fiche.derniere,
-			tempsJeu = fiche and fiche.tempsJeu,
-			pseudos = fiche and fiche.pseudos,
-			avertissements = if etat then etat.avertissements else 0,
-			ban = siActif(ban),
-			mute = siActif(mute),
+			name = name,
+			displayName = if online then online.DisplayName else nil,
+			online = online ~= nil,
+			session = if online then Censor.sessionDuration(online) else nil,
+			rank = rank and rank.name,
+			rankColor = rank and rank.color,
+			firstSeen = record and record.firstSeen,
+			lastSeen = record and record.lastSeen,
+			playtime = record and record.playtime,
+			usernames = record and record.usernames,
+			warnings = if state then state.warnings else 0,
+			ban = ifActive(ban),
+			mute = ifActive(mute),
 			sanctions = sanctions,
-			peutAgir = Senatus.peutAgirSur(acteur, userId),
+			canAct = Senatus.canActOn(actor, userId),
 		})
 	end,
 }
 
-actions["praetor.avertir"] = {
-	permission = "praetor.avertir",
-	executer = function(acteur, d)
-		local erreur, userId, raison = lireSanction(acteur, d, false)
-		if erreur then
-			return erreur
+actions["praetor.warn"] = {
+	permission = "praetor.warn",
+	execute = function(actor, d)
+		local err, userId, reason = readSanction(actor, d, false)
+		if err then
+			return err
 		end
-		local ok, code = Praetor.avertir(acteur, userId, raison)
-		return resultatPraetor(acteur, "avertissement", userId :: number, raison :: string, ok, code)
+		local ok, code = Praetor.warn(actor, userId, reason)
+		return praetorResult(actor, "warning", userId :: number, reason :: string, ok, code)
 	end,
 }
 
 actions["praetor.mute"] = {
 	permission = "praetor.mute",
-	executer = function(acteur, d)
-		local erreur, userId, raison, duree = lireSanction(acteur, d, true)
-		if erreur then
-			return erreur
+	execute = function(actor, d)
+		local err, userId, reason, duration = readSanction(actor, d, true)
+		if err then
+			return err
 		end
-		local ok, code = Praetor.mute(acteur, userId, duree, raison)
-		return resultatPraetor(
-			acteur,
+		local ok, code = Praetor.mute(actor, userId, duration, reason)
+		return praetorResult(
+			actor,
 			"mute",
 			userId :: number,
-			`{raison} ({Core.formaterDuree(duree)})`,
+			`{reason} ({Core.formatDuration(duration)})`,
 			ok,
 			code
 		)
@@ -295,41 +295,41 @@ actions["praetor.mute"] = {
 
 actions["praetor.demute"] = {
 	permission = "praetor.mute",
-	executer = function(acteur, d)
-		local erreur, userId = lireSanction(acteur, { userId = d.userId }, false)
-		if erreur then
-			return erreur
+	execute = function(actor, d)
+		local err, userId = readSanction(actor, { userId = d.userId }, false)
+		if err then
+			return err
 		end
-		local ok, code = Praetor.demute(acteur, userId)
-		return resultatPraetor(acteur, "démute", userId :: number, "—", ok, code)
+		local ok, code = Praetor.demute(actor, userId)
+		return praetorResult(actor, "unmute", userId :: number, "—", ok, code)
 	end,
 }
 
 actions["praetor.kick"] = {
 	permission = "praetor.kick",
-	executer = function(acteur, d)
-		local erreur, userId, raison = lireSanction(acteur, d, false)
-		if erreur then
-			return erreur
+	execute = function(actor, d)
+		local err, userId, reason = readSanction(actor, d, false)
+		if err then
+			return err
 		end
-		local ok, code = Praetor.kick(acteur, userId, raison)
-		return resultatPraetor(acteur, "expulsion", userId :: number, raison :: string, ok, code)
+		local ok, code = Praetor.kick(actor, userId, reason)
+		return praetorResult(actor, "kick", userId :: number, reason :: string, ok, code)
 	end,
 }
 
 actions["praetor.ban"] = {
 	permission = "praetor.ban",
-	executer = function(acteur, d)
-		local erreur, userId, raison, duree = lireSanction(acteur, d, true)
-		if erreur then
-			return erreur
+	execute = function(actor, d)
+		local err, userId, reason, duration = readSanction(actor, d, true)
+		if err then
+			return err
 		end
-		local ok, code = Praetor.bannir(acteur, userId, duree, raison)
-		return resultatPraetor(
-			acteur,
-			"bannissement",
+		local ok, code = Praetor.ban(actor, userId, duration, reason)
+		return praetorResult(
+			actor,
+			"ban",
 			userId :: number,
-			`{raison} ({Core.formaterDuree(duree)})`,
+			`{reason} ({Core.formatDuration(duration)})`,
 			ok,
 			code
 		)
@@ -338,199 +338,199 @@ actions["praetor.ban"] = {
 
 actions["praetor.unban"] = {
 	permission = "praetor.unban",
-	executer = function(acteur, d)
-		if not Core.estUserId(d.userId) then
-			return echec("joueur_introuvable")
+	execute = function(actor, d)
+		if not Core.isUserId(d.userId) then
+			return failure("player_not_found")
 		end
-		local ok, code = Praetor.debannir(acteur, d.userId)
-		return resultatPraetor(acteur, "débannissement", d.userId, "—", ok, code)
+		local ok, code = Praetor.unban(actor, d.userId)
+		return praetorResult(actor, "unban", d.userId, "—", ok, code)
 	end,
 }
 
--- Téléportation du staff. Provisoire : reviendra à Viator quand il existera.
-actions["teleporter"] = {
-	permission = "consul.teleporter",
-	executer = function(acteur, d)
-		if not Core.estUserId(d.userId) or (d.sens ~= "vers" and d.sens ~= "amener") then
-			return echec("valeur_invalide")
+-- Staff teleport. Temporary: it will move to Viator once it exists.
+actions["teleport"] = {
+	permission = "consul.teleport",
+	execute = function(actor, d)
+		if not Core.isUserId(d.userId) or (d.direction ~= "to" and d.direction ~= "bring") then
+			return failure("invalid_value")
 		end
-		local cible = Players:GetPlayerByUserId(d.userId)
-		if not cible then
-			return echec("hors_ligne")
+		local target = Players:GetPlayerByUserId(d.userId)
+		if not target then
+			return failure("offline")
 		end
-		if d.sens == "amener" and not Senatus.peutAgirSur(acteur, d.userId) then
-			return echec("rang_insuffisant")
+		if d.direction == "bring" and not Senatus.canActOn(actor, d.userId) then
+			return failure("insufficient_rank")
 		end
-		local depart = personnage(if d.sens == "vers" then acteur else cible)
-		local arrivee = personnage(if d.sens == "vers" then cible else acteur)
-		if not depart or not arrivee then
-			return echec("sans_personnage")
+		local source = character(if d.direction == "to" then actor else target)
+		local destination = character(if d.direction == "to" then target else actor)
+		if not source or not destination then
+			return failure("no_character")
 		end
-		depart:PivotTo(arrivee:GetPivot() * CFrame.new(0, 0, 4))
-		Censor.journaliser(
-			acteur,
-			if d.sens == "vers" then "téléportation vers" else "téléportation amener",
-			{ nom = cible.Name, userId = cible.UserId }
+		source:PivotTo(destination:GetPivot() * CFrame.new(0, 0, 4))
+		Censor.logAction(
+			actor,
+			if d.direction == "to" then "teleport to" else "teleport bring",
+			{ name = target.Name, userId = target.UserId }
 		)
-		return succes()
+		return success()
 	end,
 }
 
-actions["serveur.etat"] = {
-	permission = "consul.ouvrir",
-	executer = function()
-		return succes({ serveur = Praefectus.etat() })
+actions["server.state"] = {
+	permission = "consul.open",
+	execute = function()
+		return success({ server = Praefectus.state() })
 	end,
 }
 
-local GENRES = { info = true, alerte = true, maintenance = true }
+local KINDS = { info = true, warning = true, maintenance = true }
 
-actions["serveur.annoncer"] = {
-	permission = "praefectus.annoncer",
-	executer = function(acteur, d)
-		if not Core.estTexte(d.texte, 200) or not string.match(d.texte, "%S") then
-			return echec("texte_invalide")
+actions["server.announce"] = {
+	permission = "praefectus.announce",
+	execute = function(actor, d)
+		if not Core.isText(d.text, 200) or not string.match(d.text, "%S") then
+			return failure("invalid_text")
 		end
-		if not GENRES[d.genre] then
-			return echec("valeur_invalide")
+		if not KINDS[d.kind] then
+			return failure("invalid_value")
 		end
-		local texte = filtrer(d.texte, acteur)
-		if not texte then
-			return echec("filtrage_echoue")
+		local text = filterText(d.text, actor)
+		if not text then
+			return failure("filtering_failed")
 		end
-		local annonce = { genre = d.genre, texte = texte, titre = "Annonce", duree = 10 }
-		if d.partout == true then
-			Praeco.annoncerPartout(annonce)
+		local announcement = { kind = d.kind, text = text, title = "Announcement", duration = 10 }
+		if d.everywhere == true then
+			Praeco.announceEverywhere(announcement)
 		else
-			Praeco.annoncer(annonce)
+			Praeco.announce(announcement)
 		end
-		Censor.journaliser(acteur, if d.partout == true then "annonce (tous serveurs)" else "annonce", nil, texte)
-		return succes()
+		Censor.logAction(actor, if d.everywhere == true then "announcement (all servers)" else "announcement", nil, text)
+		return success()
 	end,
 }
 
-actions["serveur.verrouiller"] = {
-	permission = "praefectus.verrouiller",
-	executer = function(acteur, d)
-		if type(d.etat) ~= "boolean" then
-			return echec("valeur_invalide")
+actions["server.lock"] = {
+	permission = "praefectus.lock",
+	execute = function(actor, d)
+		if type(d.state) ~= "boolean" then
+			return failure("invalid_value")
 		end
-		if d.partout == true then
-			local ok, code = Praefectus.ordonnerPartout("verrouiller", { etat = d.etat })
+		if d.everywhere == true then
+			local ok, code = Praefectus.broadcastOrder("lock", { state = d.state })
 			if not ok then
-				return echec(code)
+				return failure(code)
 			end
 		else
-			Praefectus.verrouiller(d.etat)
+			Praefectus.lock(d.state)
 		end
-		local action = if d.etat then "verrouillage" else "déverrouillage"
-		Censor.journaliser(acteur, if d.partout == true then `{action} (tous serveurs)` else action)
-		return succes()
+		local action = if d.state then "lock" else "unlock"
+		Censor.logAction(actor, if d.everywhere == true then `{action} (all servers)` else action)
+		return success()
 	end,
 }
 
-actions["serveur.redemarrer"] = {
-	permission = "praefectus.redemarrer",
-	executer = function(acteur, d)
-		if not Core.estNombre(d.delai) or d.delai < 5 or d.delai > 600 then
-			return echec("valeur_invalide")
+actions["server.restart"] = {
+	permission = "praefectus.restart",
+	execute = function(actor, d)
+		if not Core.isNumber(d.delaySeconds) or d.delaySeconds < 5 or d.delaySeconds > 600 then
+			return failure("invalid_value")
 		end
-		local raison = "Maintenance"
-		if Core.estTexte(d.raison, 120) and string.match(d.raison, "%S") then
-			local filtre = filtrer(d.raison, acteur)
-			if not filtre then
-				return echec("filtrage_echoue")
+		local reason = "Maintenance"
+		if Core.isText(d.reason, 120) and string.match(d.reason, "%S") then
+			local filter = filterText(d.reason, actor)
+			if not filter then
+				return failure("filtering_failed")
 			end
-			raison = filtre
+			reason = filter
 		end
-		local delai = math.floor(d.delai)
+		local delaySeconds = math.floor(d.delaySeconds)
 		local ok, code
-		if d.partout == true then
-			ok, code = Praefectus.ordonnerPartout("redemarrer", { delai = delai, raison = raison })
+		if d.everywhere == true then
+			ok, code = Praefectus.broadcastOrder("restart", { delaySeconds = delaySeconds, reason = reason })
 		else
-			ok, code = Praefectus.redemarrer(delai, raison)
+			ok, code = Praefectus.restart(delaySeconds, reason)
 		end
 		if not ok then
-			return echec(code)
+			return failure(code)
 		end
-		Censor.journaliser(
-			acteur,
-			if d.partout == true then "redémarrage (tous serveurs)" else "redémarrage",
+		Censor.logAction(
+			actor,
+			if d.everywhere == true then "restart (all servers)" else "restart",
 			nil,
-			`{raison} — {delai} s`
+			`{reason}: {Core.formatCountdown(delaySeconds)}`
 		)
-		return succes()
+		return success()
 	end,
 }
 
-actions["serveur.annuler"] = {
-	permission = "praefectus.redemarrer",
-	executer = function(acteur, d)
-		if d.partout == true then
-			local ok, code = Praefectus.ordonnerPartout("annuler", {})
+actions["server.cancel"] = {
+	permission = "praefectus.restart",
+	execute = function(actor, d)
+		if d.everywhere == true then
+			local ok, code = Praefectus.broadcastOrder("cancel", {})
 			if not ok then
-				return echec(code)
+				return failure(code)
 			end
-		elseif not Praefectus.annulerRedemarrage() then
-			return echec("rien_a_annuler")
+		elseif not Praefectus.cancelRestart() then
+			return failure("nothing_to_cancel")
 		end
-		Censor.journaliser(acteur, "annulation du redémarrage")
-		return succes()
+		Censor.logAction(actor, "restart cancelled")
+		return success()
 	end,
 }
 
-actions["lex.liste"] = {
-	permission = "lex.modifier",
-	executer = function()
-		return succes({ reglages = Lex.liste() })
+actions["lex.list"] = {
+	permission = "lex.edit",
+	execute = function()
+		return success({ settings = Lex.list() })
 	end,
 }
 
-actions["lex.modifier"] = {
-	permission = "lex.modifier",
-	executer = function(acteur, d)
-		if not Core.estTexte(d.cle, 80) then
-			return echec("cle_inconnue")
+actions["lex.edit"] = {
+	permission = "lex.edit",
+	execute = function(actor, d)
+		if not Core.isText(d.key, 80) then
+			return failure("unknown_key")
 		end
-		local ancienne = select(2, pcall(Lex.get, d.cle))
+		local previous = select(2, pcall(Lex.get, d.key))
 		local ok, code
-		if d.reinitialiser == true then
-			ok, code = Lex.reinitialiser(d.cle)
+		if d.reset == true then
+			ok, code = Lex.reset(d.key)
 		else
-			ok, code = Lex.set(d.cle, d.valeur)
+			ok, code = Lex.set(d.key, d.value)
 		end
 		if not ok then
-			return echec(code)
+			return failure(code)
 		end
-		Censor.journaliser(acteur, "réglage", nil, `{d.cle} : {tostring(ancienne)} → {tostring(Lex.get(d.cle))}`)
-		return succes({ valeur = Lex.get(d.cle) })
+		Censor.logAction(actor, "setting", nil, `{d.key}: {tostring(previous)} → {tostring(Lex.get(d.key))}`)
+		return success({ value = Lex.get(d.key) })
 	end,
 }
 
-actions["censor.journal"] = {
-	permission = "censor.journal",
-	executer = function()
-		return succes({ entrees = Censor.journal(100) })
+actions["censor.log"] = {
+	permission = "censor.log",
+	execute = function()
+		return success({ entries = Censor.getLog(100) })
 	end,
 }
 
--- Diffusion vers les panneaux ouverts --------------------------------------------------
+-- Broadcast to open panels --------------------------------------------------
 
-local function staffAvec(permission: string): { Player }
-	local liste = {}
-	for _, joueur in Players:GetPlayers() do
-		if Senatus.peut(joueur, permission) then
-			table.insert(liste, joueur)
+local function staffWith(permission: string): { Player }
+	local list = {}
+	for _, player in Players:GetPlayers() do
+		if Senatus.can(player, permission) then
+			table.insert(list, player)
 		end
 	end
-	return liste
+	return list
 end
 
-local function pousser(genre: string, donnees: any?, permission: string?)
-	Veredarius.envoyerA("consul.maj", staffAvec(permission or "consul.ouvrir"), genre, donnees)
+local function push(kind: string, data: any?, permission: string?)
+	Veredarius.sendTo("consul.update", staffWith(permission or "consul.open"), kind, data)
 end
 
--- Cycle de vie ---------------------------------------------------------------------------
+-- Lifecycle ---------------------------------------------------------------------------
 
 function Consul.init(deps)
 	Senatus = deps.Senatus
@@ -540,55 +540,55 @@ function Consul.init(deps)
 	Lex = deps.Lex
 	Praeco = deps.Praeco
 
-	Veredarius.declarer("consul.maj")
-	Veredarius.declarer("consul.acces")
+	Veredarius.declare("consul.update")
+	Veredarius.declare("consul.access")
 end
 
-function Consul.demarrer()
-	Veredarius.servir("consul", function(acteur: Player, nom: any, donnees: any)
-		if type(nom) ~= "string" then
-			return echec("action_inconnue")
+function Consul.start()
+	Veredarius.serve("consul", function(actor: Player, name: any, data: any)
+		if type(name) ~= "string" then
+			return failure("unknown_action")
 		end
-		local action = actions[nom]
+		local action = actions[name]
 		if not action then
-			return echec("action_inconnue")
+			return failure("unknown_action")
 		end
-		if not Senatus.peut(acteur, "consul.ouvrir") or not Senatus.peut(acteur, action.permission) then
-			-- Chaque client demande l'accès au démarrage : un refus là est normal.
-			if nom == "acces" then
-				return echec("non_autorise")
+		if not Senatus.can(actor, "consul.open") or not Senatus.can(actor, action.permission) then
+			-- Every client asks for access at startup: a refusal here is normal.
+			if name == "access" then
+				return failure("unauthorized")
 			end
-			journal.avertissement(`{acteur.Name} a tenté "{nom}" sans permission`)
-			return echec("non_autorise")
+			logger.warning(`{actor.Name} tried "{name}" without permission`)
+			return failure("unauthorized")
 		end
-		return action.executer(acteur, if type(donnees) == "table" then donnees else {})
+		return action.execute(actor, if type(data) == "table" then data else {})
 	end)
 
-	-- Le rang peut arriver après le chargement du client (groupes) : on le prévient.
-	Signum.on("senatus.rang", function(joueur: Player)
-		if Senatus.peut(joueur, "consul.ouvrir") then
-			Veredarius.envoyer("consul.acces", joueur)
+	-- The rank can arrive after the client has loaded (groups): notify it.
+	Signum.on("senatus.rank", function(player: Player)
+		if Senatus.can(player, "consul.open") then
+			Veredarius.send("consul.access", player)
 		end
 	end)
 
 	Players.PlayerAdded:Connect(function()
-		pousser("joueurs")
+		push("players")
 	end)
 	Players.PlayerRemoving:Connect(function()
-		task.defer(pousser, "joueurs")
+		task.defer(push, "players")
 	end)
-	Signum.on("praetor.sanction", function(_genre, userId)
-		pousser("joueurs")
-		pousser("fiche", userId)
+	Signum.on("praetor.sanction", function(_kind, userId)
+		push("players")
+		push("record", userId)
 	end)
-	Signum.on("praefectus.etat", function(etat)
-		pousser("serveur", etat)
+	Signum.on("praefectus.state", function(state)
+		push("server", state)
 	end)
-	Signum.on("censor.entree", function(entree)
-		pousser("journal", entree, "censor.journal")
+	Signum.on("censor.entry", function(entry)
+		push("log", entry, "censor.log")
 	end)
 	Signum.on("lex.change", function()
-		pousser("reglages", nil, "lex.modifier")
+		push("settings", nil, "lex.edit")
 	end)
 end
 
