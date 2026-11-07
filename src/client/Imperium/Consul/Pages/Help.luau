@@ -29,6 +29,16 @@ local SECTIONS = {
 		},
 	},
 	{
+		page = "Lictor",
+		title = "Anticheat",
+		path = "Curia > Lictor",
+		permission = "lictor.view",
+		summary = "Players whose movements look impossible, with a suspicion score that drops over time. Above the alert threshold, staff get a notice; above the kick threshold, Praetor kicks the player.",
+		commands = {
+			{ "lictor.clear", "Clear", "Resets the score and history of a player, after a false alarm." },
+		},
+	},
+	{
 		page = "Server",
 		title = "Server",
 		path = "Curia > Praefectus",

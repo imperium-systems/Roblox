@@ -29,6 +29,7 @@ Conditor.run({
 	systems.Senatus,
 	systems.Censor,
 	systems.Praetor,
+	systems.Lictor,
 	systems.Praefectus,
 	systems.Consul,
 })

@@ -50,6 +50,7 @@ local MESSAGES: { [string]: string } = {
 -- Simple view: what you came to do, without knowing the system names.
 local SIMPLE_VIEW = {
 	{ page = "Players", name = "Players", description = "Sanctions and records" },
+	{ page = "Lictor", name = "Anticheat", description = "Suspicious players" },
 	{ page = "Server", name = "Server", description = "Announcements, restart" },
 	{ page = "Log", name = "Log", description = "Staff actions" },
 	{ page = "Settings", name = "Settings", description = "Game values" },
