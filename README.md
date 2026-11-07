@@ -17,11 +17,11 @@ rojo serve
 For more help, check out [the Rojo documentation](https://rojo.space/docs).
 ## Imperium — Consul (panneau admin)
 
-Ouvrir : **F2** ou le bouton « Consul » en bas à gauche (staff uniquement).
+Ouvrir : **F2** ou le bouton « Imperium » en bas à droite (staff uniquement). Deux affichages : la vue simplifiée (les tâches) et la vue Familles (les 12 familles et leurs systèmes). Seul ce que le rang autorise est affiché.
 
 Qui est staff : [src/server/Config/Senatus.luau](src/server/Config/Senatus.luau)
-- `membres` : `[UserId] = "moderateur" | "admin" | "fondateur"`
-- `groupe` : rangs attribués selon le rang dans un groupe Roblox
+- `members` : `[UserId] = "moderator" | "admin" | "founder"`
+- `group` : rangs attribués selon le rang dans un groupe Roblox
 - le créateur du jeu est fondateur ; en Studio, ton compte (Play) ou Player1 (Test > Local Server)
 
 Pour tester les sanctions en Studio : Test > Clients and Servers > 2 joueurs. Player1 est fondateur, Player2 est la cible.
@@ -39,3 +39,28 @@ Pour que les sanctions survivent à la session : Game Settings > Security > *Ena
 | Lex | réglages modifiables à chaud |
 | Tabularius | sauvegarde (DataStore, repli en mémoire) |
 | Veredarius | remotes nommés avec limitation de débit |
+
+## Marque
+
+Couleurs, formes et polices suivent le design system Imperium (`src/client/Imperium/Consul/Theme.luau`).
+Les images sont dans `assets/`, générées depuis ses tracés officiels. Roblox ne lit ni le SVG ni les fichiers locaux :
+1. Dans Studio, ouvre **View > Asset Manager**, puis **Bulk Import**, et choisis les 26 PNG de `assets/` et `assets/insignia/`.
+2. Copie l'identifiant de chaque image dans [Logos.luau](src/client/Imperium/Consul/Logos.luau).
+
+Tant qu'un identifiant vaut 0, le panneau affiche le texte et la couleur à la place.
+
+## Distribution (Toolbox)
+
+```bash
+rojo build imperium.project.json -o dist/Imperium.rbxm
+```
+
+Le modèle se dégroupe à la main, en suivant le fichier `README` qu'il contient. Il n'y a pas d'installateur.
+Si un dossier est mal placé, `ImperiumServer` ne démarre pas et l'explique dans la fenêtre Output.
+
+Avant de publier :
+1. Importe les images de `assets/`, passe-les en **Open Use** et remplis `Logos.luau`.
+2. Vérifie que `members` est vide dans `src/server/Config/Senatus.luau`.
+3. Teste l'insertion depuis la Toolbox avec un autre compte, dans une place vide.
+
+Le passage en Open Use est définitif.

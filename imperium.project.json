@@ -1,0 +1,31 @@
+{
+  "name": "Imperium",
+  "tree": {
+    "$className": "Model",
+
+    "README": {
+      "$path": "distribution/README.luau"
+    },
+
+    "ReplicatedStorage": {
+      "$className": "Folder",
+      "ImperiumShared": {
+        "$path": "src/shared"
+      }
+    },
+
+    "ServerScriptService": {
+      "$className": "Folder",
+      "ImperiumServer": {
+        "$path": "src/server"
+      }
+    },
+
+    "StarterPlayerScripts": {
+      "$className": "Folder",
+      "ImperiumClient": {
+        "$path": "src/client"
+      }
+    }
+  }
+}

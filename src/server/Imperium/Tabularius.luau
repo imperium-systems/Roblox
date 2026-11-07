@@ -1,106 +1,107 @@
 --!strict
--- Tabularius — sauvegarde.
--- Lecture et écriture des données persistantes, avec nouvelles tentatives.
--- Ne sait pas ce que représentent les données.
+-- Tabularius: persistence.
+-- Reads and writes persistent data, with retries.
+-- Does not know what the data represents.
 --
--- Version minimale : magasins clé/valeur sur DataStoreService.
--- Si les DataStores sont indisponibles (Studio sans « Enable Studio Access to API Services »),
--- bascule en mémoire et le signale : rien n'est perdu pendant la session, tout l'est à la fermeture.
--- À venir : profils joueur avec verrouillage de session et migrations de format.
+-- Minimal version: key/value stores on DataStoreService.
+-- If DataStores are unavailable (Studio without "Enable Studio Access to API Services"),
+-- falls back to memory and says so: nothing is lost during the session, everything is on close.
+-- Coming later: player profiles with session locking and format migrations.
 
 local DataStoreService = game:GetService("DataStoreService")
 
-local Scriba = require(game:GetService("ReplicatedStorage").Shared.Imperium.Scriba)
+local Scriba = require(game:GetService("ReplicatedStorage").ImperiumShared.Imperium.Scriba)
 
-local journal = Scriba.pour("Tabularius")
+local logger = Scriba.scoped("Tabularius")
 
-local PREFIXE = "Imperium_"
-local TENTATIVES = 3
+-- Bumped when saved field names change: older test data stays behind.
+local PREFIX = "ImperiumV2_"
+local RETRIES = 3
 
-export type Magasin = {
-	lire: (self: Magasin, cle: string) -> (boolean, any),
-	modifier: (self: Magasin, cle: string, fn: (ancien: any) -> any) -> (boolean, any),
+export type KeyStore = {
+	read: (self: KeyStore, key: string) -> (boolean, any),
+	update: (self: KeyStore, key: string, fn: (previous: any) -> any) -> (boolean, any),
 }
 
 local Tabularius = {}
 
-local enMemoire = false
-local memoire: { [string]: { [string]: any } } = {}
+local inMemory = false
+local memory: { [string]: { [string]: any } } = {}
 
-local function avecTentatives<T>(operation: () -> T): (boolean, any)
-	local derniereErreur
-	for essai = 1, TENTATIVES do
-		local ok, resultat = pcall(operation)
+local function withRetries<T>(operation: () -> T): (boolean, any)
+	local lastError
+	for attempt = 1, RETRIES do
+		local ok, result = pcall(operation)
 		if ok then
-			return true, resultat
+			return true, result
 		end
-		derniereErreur = resultat
-		if essai < TENTATIVES then
-			task.wait(essai)
+		lastError = result
+		if attempt < RETRIES then
+			task.wait(attempt)
 		end
 	end
-	return false, derniereErreur
+	return false, lastError
 end
 
-function Tabularius.magasin(nom: string): Magasin
+function Tabularius.keyStore(name: string): KeyStore
 	local store: DataStore? = nil
-	if not enMemoire then
-		store = DataStoreService:GetDataStore(PREFIXE .. nom)
+	if not inMemory then
+		store = DataStoreService:GetDataStore(PREFIX .. name)
 	end
-	memoire[nom] = memoire[nom] or {}
-	local local_ = memoire[nom]
+	memory[name] = memory[name] or {}
+	local localValues = memory[name]
 
-	local magasin = {}
+	local keyStore = {}
 
-	function magasin.lire(_self: Magasin, cle: string): (boolean, any)
-		if enMemoire or not store then
-			return true, local_[cle]
+	function keyStore.read(_self: KeyStore, key: string): (boolean, any)
+		if inMemory or not store then
+			return true, localValues[key]
 		end
-		local actif = store :: DataStore
-		local ok, valeur = avecTentatives(function()
-			return actif:GetAsync(cle)
+		local active = store :: DataStore
+		local ok, value = withRetries(function()
+			return active:GetAsync(key)
 		end)
 		if not ok then
-			journal.erreur(`lecture {nom}/{cle} :`, valeur)
+			logger.err(`read {name}/{key}:`, value)
 		end
-		return ok, valeur
+		return ok, value
 	end
 
-	function magasin.modifier(_self: Magasin, cle: string, fn: (any) -> any): (boolean, any)
-		if enMemoire or not store then
-			local nouveau = fn(local_[cle])
-			if nouveau ~= nil then
-				local_[cle] = nouveau
+	function keyStore.update(_self: KeyStore, key: string, fn: (any) -> any): (boolean, any)
+		if inMemory or not store then
+			local fresh = fn(localValues[key])
+			if fresh ~= nil then
+				localValues[key] = fresh
 			end
-			return true, local_[cle]
+			return true, localValues[key]
 		end
-		local actif = store :: DataStore
-		local ok, valeur = avecTentatives(function()
-			return actif:UpdateAsync(cle, fn)
+		local active = store :: DataStore
+		local ok, value = withRetries(function()
+			return active:UpdateAsync(key, fn)
 		end)
 		if not ok then
-			journal.erreur(`écriture {nom}/{cle} :`, valeur)
+			logger.err(`write {name}/{key}:`, value)
 		end
-		return ok, valeur
+		return ok, value
 	end
 
-	return magasin :: any
+	return keyStore :: any
 end
 
-function Tabularius.estEnMemoire(): boolean
-	return enMemoire
+function Tabularius.isInMemory(): boolean
+	return inMemory
 end
 
 function Tabularius.init()
-	local ok, erreur = pcall(function()
-		DataStoreService:GetDataStore(PREFIXE .. "Sonde"):GetAsync("sonde")
+	local ok, err = pcall(function()
+		DataStoreService:GetDataStore(PREFIX .. "Probe"):GetAsync("probe")
 	end)
 	if not ok then
-		enMemoire = true
-		journal.avertissement(
-			"DataStores indisponibles, sauvegarde en mémoire seulement. "
-				.. "En Studio : Game Settings > Security > Enable Studio Access to API Services. ("
-				.. tostring(erreur)
+		inMemory = true
+		logger.warning(
+			"DataStores unavailable, saving in memory only. "
+				.. "In Studio: Game Settings > Security > Enable Studio Access to API Services. ("
+				.. tostring(err)
 				.. ")"
 		)
 	end

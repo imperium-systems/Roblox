@@ -1,381 +1,381 @@
 --!strict
--- Praetor — modération et sanctions.
--- Applique avertissements, mutes, expulsions et bannissements ; gère leur durée et leur levée.
--- Vérifie à la connexion si un joueur est banni.
--- N'est pas responsable des permissions : l'appelant (Consul, plus tard Lictor) a déjà décidé.
--- Ne détecte pas la triche (Lictor) et n'enquête pas (Quaesitor).
+-- Praetor: moderation and sanctions.
+-- Applies warnings, mutes, kicks and bans; handles their duration and removal.
+-- Checks on join whether a player is banned.
+-- Not responsible for permissions: the caller (Consul, later Lictor) has already decided.
+-- Does not detect cheating (Lictor) or investigate (Quaesitor).
 
 local MessagingService = game:GetService("MessagingService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TextChatService = game:GetService("TextChatService")
 
-local Imperium = ReplicatedStorage.Shared.Imperium
+local Imperium = ReplicatedStorage.ImperiumShared.Imperium
 local Core = require(Imperium.Core)
 local Scriba = require(Imperium.Scriba)
 local Signum = require(Imperium.Signum)
 
-local journal = Scriba.pour("Praetor")
+local logger = Scriba.scoped("Praetor")
 
-local SUJET = "Imperium_Praetor"
+local TOPIC = "Imperium_Praetor"
 
-type Mesure = {
-	fin: number?, -- nil = définitif
-	raison: string,
-	par: string,
+type Measure = {
+	expiresAt: number?, -- nil = permanent
+	reason: string,
+	by: string,
 	date: number,
 }
 
-export type Etat = {
-	ban: Mesure?,
-	mute: Mesure?,
-	avertissements: number,
+export type State = {
+	ban: Measure?,
+	mute: Measure?,
+	warnings: number,
 }
 
 local Praetor = {
-	dependances = { "Tabularius", "Censor", "Praeco", "Lex" },
+	dependencies = { "Tabularius", "Censor", "Praeco", "Lex" },
 }
 
-local magasin: any
+local keyStore: any
 local Censor: any
 local Praeco: any
 local Lex: any
 
-local etatsEnLigne: { [number]: Etat } = {}
+local onlineStates: { [number]: State } = {}
 
-local function actif(mesure: Mesure?): boolean
-	return mesure ~= nil and (mesure.fin == nil or mesure.fin > os.time())
+local function active(measure: Measure?): boolean
+	return measure ~= nil and (measure.expiresAt == nil or measure.expiresAt > os.time())
 end
 
-local function etatVide(): Etat
-	return { avertissements = 0 }
+local function emptyState(): State
+	return { warnings = 0 }
 end
 
-local function messageBan(mesure: Mesure): string
-	local fin = if mesure.fin then os.date("!%d/%m/%Y %H:%M UTC", mesure.fin) else "définitif"
-	return `Tu es banni de ce jeu.\nMotif : {mesure.raison}\nFin : {fin}`
+local function banMessage(measure: Measure): string
+	local expiresAt = if measure.expiresAt then os.date("!%d/%m/%Y %H:%M:%S UTC", measure.expiresAt) else "permanent"
+	return `You are banned from this game.\nReason: {measure.reason}\nEnds: {expiresAt}`
 end
 
--- Mute : on coupe la parole sur chaque canal de TextChatService.
-local function appliquerMute(joueur: Player)
-	local muet = actif((etatsEnLigne[joueur.UserId] or etatVide()).mute)
-	for _, objet in TextChatService:GetDescendants() do
-		if objet:IsA("TextSource") and objet.UserId == joueur.UserId then
-			objet.CanSend = not muet
+-- Mute: silences the player on every TextChatService channel.
+local function applyMute(player: Player)
+	local muted = active((onlineStates[player.UserId] or emptyState()).mute)
+	for _, object in TextChatService:GetDescendants() do
+		if object:IsA("TextSource") and object.UserId == player.UserId then
+			object.CanSend = not muted
 		end
 	end
 end
 
-local function modifier(userId: number, fn: (Etat) -> ()): Etat?
-	local ok, nouveau = magasin:modifier(tostring(userId), function(ancien: Etat?)
-		local etat = ancien or etatVide()
-		fn(etat)
-		return etat
+local function update(userId: number, fn: (State) -> ()): State?
+	local ok, fresh = keyStore:update(tostring(userId), function(previous: State?)
+		local state = previous or emptyState()
+		fn(state)
+		return state
 	end)
 	if not ok then
 		return nil
 	end
-	if etatsEnLigne[userId] then
-		etatsEnLigne[userId] = nouveau
+	if onlineStates[userId] then
+		onlineStates[userId] = fresh
 	end
-	return nouveau
+	return fresh
 end
 
-local function nomActeur(acteur: Player?): string
-	return if acteur then acteur.Name else "Système"
+local function actorName(actor: Player?): string
+	return if actor then actor.Name else "System"
 end
 
--- Prévient les autres serveurs qu'une sanction concerne peut-être un de leurs joueurs.
-local function diffuser(userId: number, genre: string, raison: string?)
+-- Tells other servers that a sanction may concern one of their players.
+local function broadcast(userId: number, kind: string, reason: string?)
 	task.spawn(function()
-		local ok, erreur = pcall(MessagingService.PublishAsync, MessagingService, SUJET, {
+		local ok, err = pcall(MessagingService.PublishAsync, MessagingService, TOPIC, {
 			userId = userId,
-			genre = genre,
-			raison = raison,
+			kind = kind,
+			reason = reason,
 		})
 		if not ok then
-			journal.avertissement("diffusion inter-serveurs impossible :", erreur)
+			logger.warning("cross-server broadcast failed:", err)
 		end
 	end)
 end
 
-local function surMessage(userId: number, genre: string, raison: string?)
-	local joueur = Players:GetPlayerByUserId(userId)
-	if not joueur then
+local function onMessage(userId: number, kind: string, reason: string?)
+	local player = Players:GetPlayerByUserId(userId)
+	if not player then
 		return
 	end
-	if genre == "kick" then
-		joueur:Kick(`Tu as été expulsé.\nMotif : {raison or "—"}`)
+	if kind == "kick" then
+		player:Kick(`You were kicked.\nReason: {reason or "—"}`)
 		return
 	end
-	-- Pour ban, mute et démute, on relit l'état depuis la sauvegarde.
-	local ok, etat = magasin:lire(tostring(userId))
+	-- For ban, mute and unmute, read the state again from storage.
+	local ok, state = keyStore:read(tostring(userId))
 	if not ok then
 		return
 	end
-	etatsEnLigne[userId] = etat or etatVide()
-	if genre == "ban" and etat and actif(etat.ban) then
-		joueur:Kick(messageBan(etat.ban))
+	onlineStates[userId] = state or emptyState()
+	if kind == "ban" and state and active(state.ban) then
+		player:Kick(banMessage(state.ban))
 	else
-		appliquerMute(joueur)
+		applyMute(player)
 	end
 end
 
 -- API --------------------------------------------------------------------------
--- Toutes les fonctions renvoient (true) ou (false, code_erreur).
+-- All functions return (true) or (false, error_code).
 
-function Praetor.etat(userId: number): Etat?
-	if etatsEnLigne[userId] then
-		return etatsEnLigne[userId]
+function Praetor.state(userId: number): State?
+	if onlineStates[userId] then
+		return onlineStates[userId]
 	end
-	local ok, etat = magasin:lire(tostring(userId))
+	local ok, state = keyStore:read(tostring(userId))
 	if not ok then
 		return nil
 	end
-	return etat or etatVide()
+	return state or emptyState()
 end
 
-function Praetor.estMuet(joueur: Player): boolean
-	local etat = etatsEnLigne[joueur.UserId]
-	return etat ~= nil and actif(etat.mute)
+function Praetor.isMuted(player: Player): boolean
+	local state = onlineStates[player.UserId]
+	return state ~= nil and active(state.mute)
 end
 
-function Praetor.estBanni(etat: Etat): boolean
-	return actif(etat.ban)
+function Praetor.isBanned(state: State): boolean
+	return active(state.ban)
 end
 
-function Praetor.avertir(acteur: Player?, userId: number, raison: string): (boolean, string?)
-	local etat = modifier(userId, function(e)
-		e.avertissements += 1
+function Praetor.warn(actor: Player?, userId: number, reason: string): (boolean, string?)
+	local state = update(userId, function(e)
+		e.warnings += 1
 	end)
-	if not etat then
-		return false, "sauvegarde"
+	if not state then
+		return false, "save_failed"
 	end
-	Censor.noterSanction(userId, {
-		type = "avertissement",
-		raison = raison,
-		par = nomActeur(acteur),
-		parId = acteur and acteur.UserId,
+	Censor.addSanction(userId, {
+		type = "warning",
+		reason = reason,
+		by = actorName(actor),
+		byId = actor and actor.UserId,
 		date = os.time(),
 	})
-	local joueur = Players:GetPlayerByUserId(userId)
-	if joueur then
-		Praeco.notifier(joueur, {
-			genre = "alerte",
-			titre = "Avertissement",
-			texte = raison,
-			duree = 12,
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		Praeco.notify(player, {
+			kind = "warning",
+			title = "Warning",
+			text = reason,
+			duration = 12,
 		})
 	end
-	Signum.emit("praetor.sanction", "avertissement", userId, acteur)
+	Signum.emit("praetor.sanction", "warning", userId, actor)
 	return true
 end
 
-function Praetor.mute(acteur: Player?, userId: number, duree: number?, raison: string): (boolean, string?)
-	local maintenant = os.time()
-	local etat = modifier(userId, function(e)
+function Praetor.mute(actor: Player?, userId: number, duration: number?, reason: string): (boolean, string?)
+	local now = os.time()
+	local state = update(userId, function(e)
 		e.mute = {
-			fin = if duree then maintenant + duree else nil,
-			raison = raison,
-			par = nomActeur(acteur),
-			date = maintenant,
+			expiresAt = if duration then now + duration else nil,
+			reason = reason,
+			by = actorName(actor),
+			date = now,
 		}
 	end)
-	if not etat then
-		return false, "sauvegarde"
+	if not state then
+		return false, "save_failed"
 	end
-	Censor.noterSanction(userId, {
+	Censor.addSanction(userId, {
 		type = "mute",
-		raison = raison,
-		par = nomActeur(acteur),
-		parId = acteur and acteur.UserId,
-		date = maintenant,
-		duree = duree,
+		reason = reason,
+		by = actorName(actor),
+		byId = actor and actor.UserId,
+		date = now,
+		duration = duration,
 	})
-	local joueur = Players:GetPlayerByUserId(userId)
-	if joueur then
-		appliquerMute(joueur)
-		Praeco.notifier(joueur, {
-			genre = "alerte",
-			titre = "Tu es muet",
-			texte = `{raison} — durée : {Core.formaterDuree(duree)}`,
-			duree = 10,
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		applyMute(player)
+		Praeco.notify(player, {
+			kind = "warning",
+			title = "You are muted",
+			text = `{reason} for {Core.formatDuration(duration)}`,
+			duration = 10,
 		})
 	else
-		diffuser(userId, "mute")
+		broadcast(userId, "mute")
 	end
-	Signum.emit("praetor.sanction", "mute", userId, acteur)
+	Signum.emit("praetor.sanction", "mute", userId, actor)
 	return true
 end
 
-function Praetor.demute(acteur: Player?, userId: number): (boolean, string?)
-	local etat = modifier(userId, function(e)
+function Praetor.demute(actor: Player?, userId: number): (boolean, string?)
+	local state = update(userId, function(e)
 		e.mute = nil
 	end)
-	if not etat then
-		return false, "sauvegarde"
+	if not state then
+		return false, "save_failed"
 	end
-	local joueur = Players:GetPlayerByUserId(userId)
-	if joueur then
-		appliquerMute(joueur)
-		Praeco.notifier(joueur, { genre = "succes", texte = "Tu peux de nouveau parler.", duree = 6 })
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		applyMute(player)
+		Praeco.notify(player, { kind = "success", text = "You can speak again.", duration = 6 })
 	else
-		diffuser(userId, "demute")
+		broadcast(userId, "demute")
 	end
-	Signum.emit("praetor.sanction", "demute", userId, acteur)
+	Signum.emit("praetor.sanction", "demute", userId, actor)
 	return true
 end
 
-function Praetor.kick(acteur: Player?, userId: number, raison: string): (boolean, string?)
-	Censor.noterSanction(userId, {
-		type = "expulsion",
-		raison = raison,
-		par = nomActeur(acteur),
-		parId = acteur and acteur.UserId,
+function Praetor.kick(actor: Player?, userId: number, reason: string): (boolean, string?)
+	Censor.addSanction(userId, {
+		type = "kick",
+		reason = reason,
+		by = actorName(actor),
+		byId = actor and actor.UserId,
 		date = os.time(),
 	})
-	local joueur = Players:GetPlayerByUserId(userId)
-	if joueur then
-		joueur:Kick(`Tu as été expulsé.\nMotif : {raison}`)
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		player:Kick(`You were kicked.\nReason: {reason}`)
 	else
-		diffuser(userId, "kick", raison)
+		broadcast(userId, "kick", reason)
 	end
-	Signum.emit("praetor.sanction", "kick", userId, acteur)
+	Signum.emit("praetor.sanction", "kick", userId, actor)
 	return true
 end
 
-function Praetor.bannir(acteur: Player?, userId: number, duree: number?, raison: string): (boolean, string?)
-	local maintenant = os.time()
-	local mesure: Mesure = {
-		fin = if duree then maintenant + duree else nil,
-		raison = raison,
-		par = nomActeur(acteur),
-		date = maintenant,
+function Praetor.ban(actor: Player?, userId: number, duration: number?, reason: string): (boolean, string?)
+	local now = os.time()
+	local measure: Measure = {
+		expiresAt = if duration then now + duration else nil,
+		reason = reason,
+		by = actorName(actor),
+		date = now,
 	}
-	local etat = modifier(userId, function(e)
-		e.ban = mesure
+	local state = update(userId, function(e)
+		e.ban = measure
 	end)
-	if not etat then
-		return false, "sauvegarde"
+	if not state then
+		return false, "save_failed"
 	end
-	Censor.noterSanction(userId, {
-		type = "bannissement",
-		raison = raison,
-		par = mesure.par,
-		parId = acteur and acteur.UserId,
-		date = maintenant,
-		duree = duree,
+	Censor.addSanction(userId, {
+		type = "ban",
+		reason = reason,
+		by = measure.by,
+		byId = actor and actor.UserId,
+		date = now,
+		duration = duration,
 	})
-	local joueur = Players:GetPlayerByUserId(userId)
-	if joueur then
-		joueur:Kick(messageBan(mesure))
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		player:Kick(banMessage(measure))
 	else
-		diffuser(userId, "ban")
+		broadcast(userId, "ban")
 	end
-	Signum.emit("praetor.sanction", "ban", userId, acteur)
+	Signum.emit("praetor.sanction", "ban", userId, actor)
 	return true
 end
 
-function Praetor.debannir(acteur: Player?, userId: number): (boolean, string?)
-	local dejaLibre = false
-	local etat = modifier(userId, function(e)
-		dejaLibre = not actif(e.ban)
+function Praetor.unban(actor: Player?, userId: number): (boolean, string?)
+	local alreadyFree = false
+	local state = update(userId, function(e)
+		alreadyFree = not active(e.ban)
 		e.ban = nil
 	end)
-	if not etat then
-		return false, "sauvegarde"
+	if not state then
+		return false, "save_failed"
 	end
-	if dejaLibre then
-		return false, "pas_banni"
+	if alreadyFree then
+		return false, "not_banned"
 	end
-	Censor.noterSanction(userId, {
-		type = "debannissement",
-		raison = "—",
-		par = nomActeur(acteur),
-		parId = acteur and acteur.UserId,
+	Censor.addSanction(userId, {
+		type = "unban",
+		reason = "—",
+		by = actorName(actor),
+		byId = actor and actor.UserId,
 		date = os.time(),
 	})
-	Signum.emit("praetor.sanction", "unban", userId, acteur)
+	Signum.emit("praetor.sanction", "unban", userId, actor)
 	return true
 end
 
--- Cycle de vie -------------------------------------------------------------------
+-- Lifecycle -------------------------------------------------------------------
 
-local function surArrivee(joueur: Player)
-	local ok, etat = magasin:lire(tostring(joueur.UserId))
+local function onPlayerAdded(player: Player)
+	local ok, state = keyStore:read(tostring(player.UserId))
 	if not ok then
-		-- Sauvegarde illisible : on laisse entrer plutôt que de bloquer tout le monde.
-		journal.avertissement(`état de {joueur.Name} illisible, entrée autorisée`)
-		etat = nil
+		-- Unreadable save: let the player in rather than blocking everyone.
+		logger.warning(`could not read the state of {player.Name}, letting them in`)
+		state = nil
 	end
-	local e: Etat = etat or etatVide()
-	if actif(e.ban) then
-		joueur:Kick(messageBan(e.ban :: Mesure))
+	local e: State = state or emptyState()
+	if active(e.ban) then
+		player:Kick(banMessage(e.ban :: Measure))
 		return
 	end
-	etatsEnLigne[joueur.UserId] = e
-	appliquerMute(joueur)
+	onlineStates[player.UserId] = e
+	applyMute(player)
 end
 
 function Praetor.init(deps)
-	magasin = deps.Tabularius.magasin("Praetor")
+	keyStore = deps.Tabularius.keyStore("Praetor")
 	Censor = deps.Censor
 	Praeco = deps.Praeco
 	Lex = deps.Lex
 
-	Lex.definir("praetor.duree_mute_defaut", {
-		defaut = "10m",
+	Lex.define("praetor.default_mute_duration", {
+		default = "10m",
 		type = "string",
-		description = "Durée proposée par défaut pour un mute (ex. 10m, 2h, 1j).",
+		description = "Default duration offered for a mute (e.g. 10m, 2h, 1d).",
 	})
-	Lex.definir("praetor.duree_ban_defaut", {
-		defaut = "1j",
+	Lex.define("praetor.default_ban_duration", {
+		default = "1d",
 		type = "string",
-		description = "Durée proposée par défaut pour un bannissement (« perm » pour définitif).",
+		description = "Default duration offered for a ban (\"perm\" for permanent).",
 	})
 end
 
-function Praetor.demarrer()
-	Players.PlayerAdded:Connect(surArrivee)
-	for _, joueur in Players:GetPlayers() do
-		task.spawn(surArrivee, joueur)
+function Praetor.start()
+	Players.PlayerAdded:Connect(onPlayerAdded)
+	for _, player in Players:GetPlayers() do
+		task.spawn(onPlayerAdded, player)
 	end
-	Players.PlayerRemoving:Connect(function(joueur)
-		etatsEnLigne[joueur.UserId] = nil
+	Players.PlayerRemoving:Connect(function(player)
+		onlineStates[player.UserId] = nil
 	end)
 
-	-- Les TextSource apparaissent quand le joueur rejoint un canal.
-	TextChatService.DescendantAdded:Connect(function(objet)
-		if objet:IsA("TextSource") then
-			local joueur = Players:GetPlayerByUserId(objet.UserId)
-			if joueur then
-				appliquerMute(joueur)
+	-- TextSources appear when the player joins a channel.
+	TextChatService.DescendantAdded:Connect(function(object)
+		if object:IsA("TextSource") then
+			local player = Players:GetPlayerByUserId(object.UserId)
+			if player then
+				applyMute(player)
 			end
 		end
 	end)
 
-	-- Levée automatique des mutes expirés.
+	-- Automatic removal of expired mutes.
 	task.spawn(function()
 		while true do
 			task.wait(15)
-			for _, joueur in Players:GetPlayers() do
-				local etat = etatsEnLigne[joueur.UserId]
-				if etat and etat.mute and not actif(etat.mute) then
-					etat.mute = nil
-					appliquerMute(joueur)
+			for _, player in Players:GetPlayers() do
+				local state = onlineStates[player.UserId]
+				if state and state.mute and not active(state.mute) then
+					state.mute = nil
+					applyMute(player)
 				end
 			end
 		end
 	end)
 
-	local ok, erreur = pcall(MessagingService.SubscribeAsync, MessagingService, SUJET, function(message)
+	local ok, err = pcall(MessagingService.SubscribeAsync, MessagingService, TOPIC, function(message)
 		local data = message.Data
-		if type(data) == "table" and Core.estUserId(data.userId) then
-			surMessage(data.userId, data.genre, data.raison)
+		if type(data) == "table" and Core.isUserId(data.userId) then
+			onMessage(data.userId, data.kind, data.reason)
 		end
 	end)
 	if not ok then
-		journal.avertissement("abonnement inter-serveurs impossible :", erreur)
+		logger.warning("cross-server subscription failed:", err)
 	end
 end
 
