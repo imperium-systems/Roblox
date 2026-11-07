@@ -177,6 +177,8 @@ local KNOWN_PERMISSIONS = {
 	"consul.teleport",
 	"censor.view",
 	"censor.log",
+	"lictor.view",
+	"lictor.clear",
 	"praetor.warn",
 	"praetor.mute",
 	"praetor.kick",

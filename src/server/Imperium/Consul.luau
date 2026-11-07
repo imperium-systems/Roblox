@@ -19,10 +19,11 @@ local Veredarius = require(Imperium.Veredarius)
 local logger = Scriba.scoped("Consul")
 
 local Consul = {
-	dependencies = { "Senatus", "Praetor", "Praefectus", "Censor", "Lex", "Praeco" },
+	dependencies = { "Senatus", "Praetor", "Praefectus", "Censor", "Lex", "Praeco", "Lictor" },
 }
 
 local Senatus: any
+local Lictor: any
 local Praetor: any
 local Praefectus: any
 local Censor: any
@@ -366,6 +367,9 @@ actions["teleport"] = {
 		if not source or not destination then
 			return failure("no_character")
 		end
+		-- A staff teleport is legitimate: Lictor must not flag it.
+		local mover = if d.direction == "to" then actor else target
+		Lictor.exempt(mover, 2)
 		source:PivotTo(destination:GetPivot() * CFrame.new(0, 0, 4))
 		Censor.logAction(
 			actor,
@@ -514,6 +518,31 @@ actions["censor.log"] = {
 	end,
 }
 
+actions["lictor.list"] = {
+	permission = "lictor.view",
+	execute = function()
+		return success({
+			suspects = Lictor.suspects(),
+			recent = Lictor.recent(30),
+			thresholds = Lictor.thresholds(),
+		})
+	end,
+}
+
+actions["lictor.clear"] = {
+	permission = "lictor.clear",
+	execute = function(actor, d)
+		if not Core.isUserId(d.userId) then
+			return failure("player_not_found")
+		end
+		if not Lictor.clear(d.userId) then
+			return failure("offline")
+		end
+		Censor.logAction(actor, "suspicion cleared", { name = nameOf(d.userId), userId = d.userId })
+		return success()
+	end,
+}
+
 -- Broadcast to open panels --------------------------------------------------
 
 local function staffWith(permission: string): { Player }
@@ -539,6 +568,7 @@ function Consul.init(deps)
 	Censor = deps.Censor
 	Lex = deps.Lex
 	Praeco = deps.Praeco
+	Lictor = deps.Lictor
 
 	Veredarius.declare("consul.update")
 	Veredarius.declare("consul.access")
@@ -589,6 +619,20 @@ function Consul.start()
 	end)
 	Signum.on("lex.change", function()
 		push("settings", nil, "lex.edit")
+	end)
+	Signum.on("lictor.detection", function(detection)
+		push("lictor", detection, "lictor.view")
+	end)
+	-- Over the alert threshold, staff who can see Lictor get a notice wherever they are.
+	Signum.on("lictor.alert", function(detection)
+		for _, player in staffWith("lictor.view") do
+			Praeco.notify(player, {
+				kind = "warning",
+				title = "LICTOR",
+				text = `{detection.label} · {detection.name}`,
+				duration = 8,
+			})
+		end
 	end)
 end
 
