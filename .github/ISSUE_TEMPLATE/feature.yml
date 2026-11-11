@@ -1,0 +1,70 @@
+name: Feature
+description: A new system, or new behavior for an existing one.
+title: "<System>: "
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One issue per system or per change. Write it like a page of the systems document: what it does, what it does not do, who it works with.
+        Add the family label (core, curia, forum…) after creating the issue.
+
+  - type: dropdown
+    id: family
+    attributes:
+      label: Family
+      options:
+        - Core
+        - Curia
+        - Forum
+        - Aerarium
+        - Ludus
+        - Villa
+        - Mundus
+        - Theatrum
+        - Odeum
+        - Machina
+        - Viae
+        - Fabrica
+        - Distribution (model, README, assets)
+    validations:
+      required: true
+
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: The Latin name of the system, e.g. Quaesitor.
+    validations:
+      required: true
+
+  - type: textarea
+    id: does
+    attributes:
+      label: What it does
+      description: The concrete responsibilities, from the player's or the staff's point of view.
+    validations:
+      required: true
+
+  - type: textarea
+    id: does-not
+    attributes:
+      label: What it does not do
+      description: The border with neighboring systems, so two systems do not do the same job.
+
+  - type: input
+    id: works-with
+    attributes:
+      label: Works with
+      description: Systems it calls or that call it, e.g. Lictor, Tribune, Censor.
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: What must work in Studio before the PR is merged. One line per check.
+      placeholder: |
+        - [ ] Staff can …
+        - [ ] Players see …
+    validations:
+      required: true
