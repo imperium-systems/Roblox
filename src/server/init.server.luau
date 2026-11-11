@@ -25,11 +25,13 @@ Conditor.run({
 	systems.Lex,
 	-- Forum
 	systems.Praeco,
+	systems.Tribune,
 	-- Curia
 	systems.Senatus,
 	systems.Censor,
 	systems.Praetor,
 	systems.Lictor,
+	systems.Nuntius,
 	systems.Praefectus,
 	systems.Consul,
 })

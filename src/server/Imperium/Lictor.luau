@@ -214,6 +214,12 @@ function Lictor.suspects(): { { [string]: any } }
 	return list
 end
 
+-- Current score of an online player (0 when nothing was detected).
+function Lictor.scoreOf(player: Player): number
+	local t = trackers[player]
+	return if t then math.round(decay(t) * 10) / 10 else 0
+end
+
 function Lictor.recent(limit: number?): { Detection }
 	local list = {}
 	for i = 1, math.min(limit or MAX_RECENT, #recent) do
