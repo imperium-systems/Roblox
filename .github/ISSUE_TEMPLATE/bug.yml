@@ -1,0 +1,67 @@
+name: Bug
+description: Something in Imperium does not work as expected.
+title: "<System>: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste a webhook URL, a secret or a player's personal information.
+
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: Where the problem shows, e.g. Consul, Lictor, Tribune.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown at the top of the panel, e.g. 0.1.6.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where it happens
+      options:
+        - Studio, Play (solo)
+        - Studio, local server with several players
+        - Live game
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the panel with F2
+        2. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happens instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Lines from the Studio output, from the Server window when testing with several players. Imperium lines start with [System].
+      render: text
