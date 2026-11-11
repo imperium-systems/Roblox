@@ -14,6 +14,8 @@ return {
 				"consul.open",
 				"consul.teleport",
 				"censor.view",
+				"lictor.view",
+				"tribune.handle",
 				"praetor.warn",
 				"praetor.mute",
 				"praetor.kick",
@@ -31,6 +33,8 @@ return {
 				"praefectus.announce",
 				"praefectus.lock",
 				"censor.log",
+				"lictor.clear",
+				"tribune.manage",
 			},
 		},
 		{

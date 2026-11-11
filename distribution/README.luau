@@ -18,6 +18,9 @@
 	4. Delete the empty folders.
 
 	Open the panel in game with F2, or the Imperium button at the bottom right.
+	Players send reports with the Report button at the bottom left, or /report in chat.
+	Webhooks (Discord or other) for reports: ImperiumServer > Config > Nuntius.
+	Staff point for teleports: a part named ImperiumStaffPoint in Workspace.
 
 	To save sanctions in Studio:
 	Game Settings > Security > Enable Studio Access to API Services.

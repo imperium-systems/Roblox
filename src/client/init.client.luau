@@ -14,5 +14,6 @@ local systems = script:WaitForChild("Imperium")
 
 Conditor.run({
 	systems:WaitForChild("Praeco"),
+	systems:WaitForChild("Tribune"),
 	systems:WaitForChild("Consul"),
 })
