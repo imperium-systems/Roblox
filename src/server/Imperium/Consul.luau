@@ -19,11 +19,12 @@ local Veredarius = require(Imperium.Veredarius)
 local logger = Scriba.scoped("Consul")
 
 local Consul = {
-	dependencies = { "Senatus", "Praetor", "Praefectus", "Censor", "Lex", "Praeco", "Lictor" },
+	dependencies = { "Senatus", "Praetor", "Praefectus", "Censor", "Lex", "Praeco", "Lictor", "Tribune" },
 }
 
 local Senatus: any
 local Lictor: any
+local Tribune: any
 local Praetor: any
 local Praefectus: any
 local Censor: any
@@ -134,6 +135,23 @@ local function character(player: Player): Model?
 	return nil
 end
 
+-- A ban or mute that is still running, or nil.
+local function activeMeasure(m: any): Response?
+	if m and (m.expiresAt == nil or m.expiresAt > os.time()) then
+		return { expiresAt = m.expiresAt, reason = m.reason, by = m.by, date = m.date }
+	end
+	return nil
+end
+
+-- Part where staff send players with "Send to point".
+local function staffPoint(): BasePart?
+	local found = workspace:FindFirstChild(Lex.get("consul.staff_point"), true)
+	if found and found:IsA("BasePart") then
+		return found
+	end
+	return nil
+end
+
 -- View of an online player for the panel list.
 local function playerSummary(player: Player): Response
 	local rank = Senatus.rank(player)
@@ -225,15 +243,6 @@ actions["players.record"] = {
 		local state = Praetor.state(userId)
 		local rank = online and Senatus.rank(online)
 
-		local ban = state and state.ban
-		local mute = state and state.mute
-		local now = os.time()
-		local function ifActive(m)
-			if m and (m.expiresAt == nil or m.expiresAt > now) then
-				return { expiresAt = m.expiresAt, reason = m.reason, by = m.by, date = m.date }
-			end
-			return nil
-		end
 
 		local sanctions = {}
 		if record then
@@ -255,8 +264,8 @@ actions["players.record"] = {
 			playtime = record and record.playtime,
 			usernames = record and record.usernames,
 			warnings = if state then state.warnings else 0,
-			ban = ifActive(ban),
-			mute = ifActive(mute),
+			ban = activeMeasure(state and state.ban),
+			mute = activeMeasure(state and state.mute),
 			sanctions = sanctions,
 			canAct = Senatus.canActOn(actor, userId),
 		})
@@ -349,33 +358,51 @@ actions["praetor.unban"] = {
 }
 
 -- Staff teleport. Temporary: it will move to Viator once it exists.
+--   to     the staff member goes to the player
+--   bring  the player comes to the staff member
+--   point  the player goes to the staff point (Lex consul.staff_point)
+-- slot 1 or 2 shifts the arrival sideways, so two players sent together do not overlap.
+local SLOTS = { [0] = CFrame.new(0, 0, 4), [1] = CFrame.new(4, 0, 4), [2] = CFrame.new(-4, 0, 4) }
+local MOVES = { to = "teleport to", bring = "teleport bring", point = "teleport to staff point" }
+
 actions["teleport"] = {
 	permission = "consul.teleport",
 	execute = function(actor, d)
-		if not Core.isUserId(d.userId) or (d.direction ~= "to" and d.direction ~= "bring") then
+		local direction = d.direction
+		if not Core.isUserId(d.userId) or type(direction) ~= "string" or not MOVES[direction] then
 			return failure("invalid_value")
 		end
 		local target = Players:GetPlayerByUserId(d.userId)
 		if not target then
 			return failure("offline")
 		end
-		if d.direction == "bring" and not Senatus.canActOn(actor, d.userId) then
+		if direction ~= "to" and not Senatus.canActOn(actor, d.userId) then
 			return failure("insufficient_rank")
 		end
-		local source = character(if d.direction == "to" then actor else target)
-		local destination = character(if d.direction == "to" then target else actor)
-		if not source or not destination then
+		local mover = if direction == "to" then actor else target
+		local model = character(mover)
+		if not model then
 			return failure("no_character")
 		end
+		local destination: CFrame
+		if direction == "point" then
+			local point = staffPoint()
+			if not point then
+				return failure("no_staff_point")
+			end
+			destination = point.CFrame + Vector3.new(0, point.Size.Y / 2 + 3, 0)
+		else
+			local other = character(if direction == "to" then target else actor)
+			if not other then
+				return failure("no_character")
+			end
+			destination = other:GetPivot()
+		end
+		local slot = if d.slot == 1 or d.slot == 2 then d.slot else 0
 		-- A staff teleport is legitimate: Lictor must not flag it.
-		local mover = if d.direction == "to" then actor else target
 		Lictor.exempt(mover, 2)
-		source:PivotTo(destination:GetPivot() * CFrame.new(0, 0, 4))
-		Censor.logAction(
-			actor,
-			if d.direction == "to" then "teleport to" else "teleport bring",
-			{ name = target.Name, userId = target.UserId }
-		)
+		model:PivotTo(destination * SLOTS[slot])
+		Censor.logAction(actor, MOVES[direction], { name = target.Name, userId = target.UserId })
 		return success()
 	end,
 }
@@ -543,6 +570,143 @@ actions["lictor.clear"] = {
 	end,
 }
 
+local FILTERS = { open = true, closed = true, all = true }
+local OUTCOMES = { resolved = true, dismissed = true }
+
+actions["tribune.list"] = {
+	permission = "tribune.handle",
+	execute = function(_, d)
+		local filter = if FILTERS[d.filter] then d.filter else "open"
+		local tickets = Tribune.list(filter, 60)
+		if not tickets then
+			return failure("save_failed")
+		end
+		return success({ tickets = tickets, openCount = Tribune.openCount(), webhooks = Tribune.webhooks() })
+	end,
+}
+
+-- One side of a ticket: record, sanctions, and the log entries about that player.
+local function personOf(actor: Player, userId: number, name: string, log: { any }): Response
+	local online = Players:GetPlayerByUserId(userId)
+	local record = Censor.record(userId)
+	local state = Praetor.state(userId)
+	local rank = online and Senatus.rank(online)
+	local sanctions = {}
+	if record then
+		for i = #record.sanctions, math.max(1, #record.sanctions - 4), -1 do
+			table.insert(sanctions, record.sanctions[i])
+		end
+	end
+	local entries = {}
+	for _, entry in log do
+		if entry.targetId == userId or entry.actorId == userId then
+			table.insert(entries, entry)
+			if #entries >= 8 then
+				break
+			end
+		end
+	end
+	return {
+		userId = userId,
+		name = name,
+		displayName = if online then online.DisplayName else nil,
+		online = online ~= nil,
+		rank = rank and rank.name,
+		rankColor = rank and rank.color,
+		firstSeen = record and record.firstSeen,
+		playtime = record and record.playtime,
+		warnings = if state then state.warnings else 0,
+		ban = activeMeasure(state and state.ban),
+		mute = activeMeasure(state and state.mute),
+		sanctionCount = if record then #record.sanctions else 0,
+		sanctions = sanctions,
+		lictor = if online then Lictor.scoreOf(online) else nil,
+		log = entries,
+		canAct = Senatus.canActOn(actor, userId),
+	}
+end
+
+actions["tribune.detail"] = {
+	permission = "tribune.handle",
+	execute = function(actor, d)
+		if not Core.isPositiveInteger(d.id) then
+			return failure("ticket_not_found")
+		end
+		local ticket = Tribune.get(d.id)
+		if not ticket then
+			return failure("ticket_not_found")
+		end
+		local log = Censor.getLog(200)
+		return success({
+			ticket = ticket,
+			reporter = personOf(actor, ticket.reporterId, ticket.reporterName, log),
+			target = if ticket.targetId then personOf(actor, ticket.targetId, ticket.targetName, log) else nil,
+			maxComment = Tribune.MAX_COMMENT,
+			staffPoint = staffPoint() ~= nil,
+		})
+	end,
+}
+
+-- Result of a ticket operation, logged with its target.
+local function ticketResult(actor: Player, action: string, ok: boolean, code: string?, ticket: any?): Response
+	if not ok or not ticket then
+		return failure(code or "internal_error")
+	end
+	local target = if ticket.targetId then { name = ticket.targetName, userId = ticket.targetId } else nil
+	Censor.logAction(actor, action, target, `#{ticket.id} {ticket.categoryLabel}`)
+	return success()
+end
+
+actions["tribune.claim"] = {
+	permission = "tribune.handle",
+	execute = function(actor, d)
+		if not Core.isPositiveInteger(d.id) then
+			return failure("ticket_not_found")
+		end
+		local ok, code, ticket = Tribune.claim(actor, d.id)
+		return ticketResult(actor, "report claimed", ok, code, ticket)
+	end,
+}
+
+actions["tribune.release"] = {
+	permission = "tribune.handle",
+	execute = function(actor, d)
+		if not Core.isPositiveInteger(d.id) then
+			return failure("ticket_not_found")
+		end
+		local ok, code, ticket = Tribune.release(actor, d.id, Senatus.can(actor, "tribune.manage"))
+		return ticketResult(actor, "report released", ok, code, ticket)
+	end,
+}
+
+actions["tribune.close"] = {
+	permission = "tribune.handle",
+	execute = function(actor, d)
+		if not Core.isPositiveInteger(d.id) then
+			return failure("ticket_not_found")
+		end
+		if not OUTCOMES[d.outcome] then
+			return failure("invalid_value")
+		end
+		local comment: string? = nil
+		if d.comment ~= nil then
+			if not Core.isText(d.comment, Tribune.MAX_COMMENT) then
+				return failure("invalid_text")
+			end
+			if string.match(d.comment, "%S") then
+				comment = filterText(d.comment, actor)
+				if not comment then
+					return failure("filtering_failed")
+				end
+			end
+		end
+		local force = Senatus.can(actor, "tribune.manage")
+		local ok, code, ticket = Tribune.close(actor, d.id, d.outcome, force, comment)
+		local action = if d.outcome == "resolved" then "report resolved" else "report dismissed"
+		return ticketResult(actor, action, ok, code, ticket)
+	end,
+}
+
 -- Broadcast to open panels --------------------------------------------------
 
 local function staffWith(permission: string): { Player }
@@ -569,6 +733,13 @@ function Consul.init(deps)
 	Lex = deps.Lex
 	Praeco = deps.Praeco
 	Lictor = deps.Lictor
+	Tribune = deps.Tribune
+
+	Lex.define("consul.staff_point", {
+		default = "ImperiumStaffPoint",
+		type = "string",
+		description = "Name of the part in Workspace where staff send players (Send to point).",
+	})
 
 	Veredarius.declare("consul.update")
 	Veredarius.declare("consul.access")
@@ -632,6 +803,24 @@ function Consul.start()
 				text = `{detection.label} · {detection.name}`,
 				duration = 8,
 			})
+		end
+	end)
+	-- Every change refreshes the page; a new ticket also alerts staff wherever they are.
+	Signum.on("tribune.ticket", function(ticket, created)
+		push("tribune", ticket.id, "tribune.handle")
+		if not created then
+			return
+		end
+		local about = if ticket.targetName then ` · {ticket.targetName}` else ""
+		for _, player in staffWith("tribune.handle") do
+			if player.UserId ~= ticket.reporterId then
+				Praeco.notify(player, {
+					kind = "info",
+					title = "TRIBUNE",
+					text = `Report #{ticket.id}: {ticket.categoryLabel}{about}`,
+					duration = 8,
+				})
+			end
 		end
 	end)
 end
