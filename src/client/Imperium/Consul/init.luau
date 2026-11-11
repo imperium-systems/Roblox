@@ -44,12 +44,19 @@ local MESSAGES: { [string]: string } = {
 	network = "The server is not responding.",
 	internal_error = "Internal server error.",
 	unknown_action = "Unknown action.",
+	ticket_not_found = "This report no longer exists.",
+	ticket_closed = "This report is already closed.",
+	already_claimed = "Another staff member is handling this report.",
+	not_claimed = "Nobody has claimed this report.",
+	no_staff_point = "No staff point: add a part named ImperiumStaffPoint in Workspace (or change consul.staff_point in Settings)."
 }
 
 
 -- Simple view: what you came to do, without knowing the system names.
 local SIMPLE_VIEW = {
 	{ page = "Players", name = "Players", description = "Sanctions and records" },
+	{ page = "Tribune", name = "Reports", description = "Sent by players" },
+	{ page = "Lictor", name = "Anticheat", description = "Suspicious players" },
 	{ page = "Server", name = "Server", description = "Announcements, restart" },
 	{ page = "Log", name = "Log", description = "Staff actions" },
 	{ page = "Settings", name = "Settings", description = "Game values" },

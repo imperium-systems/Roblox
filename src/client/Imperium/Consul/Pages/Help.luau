@@ -29,6 +29,29 @@ local SECTIONS = {
 		},
 	},
 	{
+		page = "Tribune",
+		title = "Reports",
+		path = "Forum > Tribune",
+		permission = "tribune.handle",
+		summary = "Reports sent by players with the Report button or /report, about a player or a bug. Each one comes with the context of the moment: server, positions, Lictor score, past warnings, and the chat of both players from the last 5 minutes. You get a notice for every new report. Open a report to see the record and log of both players side by side.",
+		commands = {
+			{ "tribune.handle", "Claim / Release", "Takes a report so nobody else handles it at the same time, or gives it back." },
+			{ "tribune.handle", "Close / Dismiss", "Closes the report with an optional comment, kept in the ticket and sent to the webhook. The reporter is told, without your name, the sanction or the comment." },
+			{ "consul.teleport", "Teleport", "From an open report: go to either player, bring one or both, or send them to the staff point (a part named ImperiumStaffPoint)." },
+			{ "tribune.manage", "Override", "Closes or releases a report claimed by someone else." },
+		},
+	},
+	{
+		page = "Lictor",
+		title = "Anticheat",
+		path = "Curia > Lictor",
+		permission = "lictor.view",
+		summary = "Players whose movements look impossible, with a suspicion score that drops over time. Above the alert threshold, staff get a notice; above the kick threshold, Praetor kicks the player.",
+		commands = {
+			{ "lictor.clear", "Clear", "Resets the score and history of a player, after a false alarm." },
+		},
+	},
+	{
 		page = "Server",
 		title = "Server",
 		path = "Curia > Praefectus",
