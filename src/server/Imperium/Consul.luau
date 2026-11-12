@@ -372,16 +372,16 @@ actions["praetor.unban"] = {
 --   to     the staff member goes to the player
 --   bring  the player comes to the staff member
 --   point  the player goes to the staff point (Lex consul.staff_point)
--- slot 1 to 6 shifts the arrival sideways, so players sent together do not overlap.
-local SLOTS = {
-	[0] = CFrame.new(0, 0, 4),
-	[1] = CFrame.new(4, 0, 4),
-	[2] = CFrame.new(-4, 0, 4),
-	[3] = CFrame.new(8, 0, 2),
-	[4] = CFrame.new(-8, 0, 2),
-	[5] = CFrame.new(0, 0, 8),
-	[6] = CFrame.new(0, 0, -4),
-}
+-- slot 1 to 11 shifts the arrival sideways (right, left, further right...), so players
+-- sent together do not overlap; 0 lands just in front.
+local MAX_SLOT = 11
+local function slotOffset(slot: number): CFrame
+	if slot <= 0 then
+		return CFrame.new(0, 0, 4)
+	end
+	local side = if slot % 2 == 1 then 1 else -1
+	return CFrame.new(side * 4 * ((slot + 1) // 2), 0, 4)
+end
 local MOVES = { to = "teleport to", bring = "teleport bring", point = "teleport to staff point" }
 
 actions["teleport"] = {
@@ -417,10 +417,10 @@ actions["teleport"] = {
 			end
 			destination = other:GetPivot()
 		end
-		local slot = if type(d.slot) == "number" and SLOTS[d.slot] then d.slot else 0
+		local slot = if Core.isPositiveInteger(d.slot) and d.slot <= MAX_SLOT then d.slot else 0
 		-- A staff teleport is legitimate: Lictor must not flag it.
 		Lictor.exempt(mover, 2)
-		model:PivotTo(destination * SLOTS[slot])
+		model:PivotTo(destination * slotOffset(slot))
 		Censor.logAction(actor, MOVES[direction], { name = target.Name, userId = target.UserId })
 		return success()
 	end,

@@ -218,10 +218,20 @@ local function build()
 	local kind = "player"
 	local category: string? = nil
 	local targets: { number } = {} -- UserIds of the chosen players
-	local maxTargets = settings.maxTargets or 1
+	-- Lex tribune.max_targets, kept up to date by "tribune.settings".
+	local function maxTargets(): number
+		return settings.maxTargets or 1
+	end
 	local sending = false
 
-	local playerSection = Components.section(if maxTargets > 1 then `Players (up to {maxTargets})` else "Player", 3)
+	local playerSection = Components.section("Player", 3)
+	local function refreshPlayerSection()
+		playerSection.Text = Components.uppercase(if maxTargets() > 1 then `Players (up to {maxTargets()})` else "Player")
+		while #targets > maxTargets() do
+			table.remove(targets)
+		end
+	end
+	refreshPlayerSection()
 	playerSection.Parent = formPage
 	local search = Components.field("Search a player…", { LayoutOrder = 4, Parent = formPage })
 	local playerList = Components.scroller({
@@ -352,10 +362,10 @@ local function build()
 				local index = table.find(targets, player.UserId)
 				if index then
 					table.remove(targets, index)
-				elseif maxTargets <= 1 then
+				elseif maxTargets() <= 1 then
 					targets = { player.UserId }
-				elseif #targets >= maxTargets then
-					say(`You can report up to {maxTargets} players at once.`, C.danger)
+				elseif #targets >= maxTargets() then
+					say(`You can report up to {maxTargets()} players at once.`, C.danger)
 					return
 				else
 					table.insert(targets, player.UserId)
@@ -595,6 +605,11 @@ local function build()
 		end
 		settings.enabled = fresh.enabled
 		settings.button = fresh.button
+		if type(fresh.maxTargets) == "number" then
+			settings.maxTargets = fresh.maxTargets
+			refreshPlayerSection()
+			drawPlayers()
+		end
 		reportButton.Visible = fresh.enabled and fresh.button
 	end)
 

@@ -1,6 +1,6 @@
 --!strict
 -- Tribune: reports and support.
--- Lets a player report one or several players (up to MAX_TARGETS) or a bug, attaches the
+-- Lets a player report one or several players (up to tribune.max_targets) or a bug, attaches the
 -- context automatically (server, positions, Lictor score, past warnings, the recent chat
 -- of everyone involved) and
 -- follows the ticket until staff close it, with a short comment. The reporter is told
@@ -30,7 +30,6 @@ local OPEN_CHANNEL = "tribune.open"
 local MAX_TICKETS = 200 -- kept across all servers; the oldest closed ones go first
 local MAX_LENGTH = 300
 local COMMAND = "/report"
-local MAX_TARGETS = 5 -- players in one report
 local MAX_COMMENT = 300
 local CHAT_KEEP = 10 -- messages kept per player
 local CHAT_WINDOW = 300 -- seconds of chat attached to a report
@@ -415,7 +414,7 @@ function Tribune.submit(reporter: Player, data: { [string]: any }): { [string]: 
 		if #ids == 0 then
 			return failure("player_not_found")
 		end
-		if #ids > MAX_TARGETS then
+		if #ids > Lex.get("tribune.max_targets") then
 			return failure("too_many_targets")
 		end
 		for _, userId in ids do
@@ -800,6 +799,13 @@ function Tribune.init(deps)
 		min = 0,
 		max = 3600,
 	})
+	Lex.define("tribune.max_targets", {
+		default = 5,
+		type = "number",
+		description = "Players a player can name in one report (1 for one player only).",
+		min = 1,
+		max = 10,
+	})
 	Lex.define("tribune.max_open", {
 		default = 3,
 		type = "number",
@@ -821,7 +827,7 @@ function Tribune.start()
 				enabled = Lex.get("tribune.enabled"),
 				button = Lex.get("tribune.show_button"),
 				maxLength = MAX_LENGTH,
-				maxTargets = MAX_TARGETS,
+				maxTargets = Lex.get("tribune.max_targets"),
 				categories = { player = categoriesFor("player"), bug = categoriesFor("bug") },
 				wait = cooldownLeft(player),
 			}
@@ -837,15 +843,17 @@ function Tribune.start()
 		return failure("unknown_action")
 	end)
 
-	-- The button follows the setting live.
+	-- The button and the player limit follow the settings live.
 	local function broadcastSettings()
 		Veredarius.sendToAll("tribune.settings", {
 			enabled = Lex.get("tribune.enabled"),
 			button = Lex.get("tribune.show_button"),
+			maxTargets = Lex.get("tribune.max_targets"),
 		})
 	end
 	Lex.onChange("tribune.enabled", broadcastSettings)
 	Lex.onChange("tribune.show_button", broadcastSettings)
+	Lex.onChange("tribune.max_targets", broadcastSettings)
 
 	createCommand()
 
