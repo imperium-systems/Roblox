@@ -7,6 +7,7 @@
 -- accessories, tools) and hands them to this client alone, and they replace the markers.
 -- While the replay runs, the server streams the map around what the camera watches.
 
+local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -27,6 +28,24 @@ local FOCUS_EVERY = 1 -- seconds between two streaming requests
 local FOCUS_MOVE = 24 -- studs the camera moves before the map is streamed again
 local AVATAR_WAIT = 15 -- seconds to wait for the avatars built by the server
 local OTHERS_DISTANCE = 250 -- studs beyond which the names of other players are hidden
+local FREE_SPEED = 32 -- studs per second of the free camera (Shift: 4 times faster)
+local FREE_LOOK = 0.3 -- degrees of turn per pixel of mouse movement
+local FREE_ACTION = "ImperiumQuaesitorFreeCam"
+local FREE_KEYS = {
+	Enum.KeyCode.W,
+	Enum.KeyCode.A,
+	Enum.KeyCode.S,
+	Enum.KeyCode.D,
+	Enum.KeyCode.Up,
+	Enum.KeyCode.Down,
+	Enum.KeyCode.Left,
+	Enum.KeyCode.Right,
+	Enum.KeyCode.Q,
+	Enum.KeyCode.E,
+	Enum.KeyCode.Space,
+	Enum.KeyCode.LeftControl,
+	Enum.KeyCode.LeftShift,
+}
 
 -- Sample fields (see Quaesitor on the server).
 local T, X, Y, Z, YAW, HEALTH, FLAGS, TOOL, OUTFIT = 1, 2, 3, 4, 5, 6, 7, 8, 9
@@ -679,8 +698,116 @@ function Replay.start(screen: ScreenGui, case: any, onStop: () -> (), request: (
 	local cameraSelector: Frame? = nil
 	local otherIndex = 0
 
+	-- Free camera: flies anywhere, the character stays still (its keys are taken over).
+	local freeCam = false
+	local freeKeys: { [Enum.KeyCode]: boolean } = {}
+	local freeYaw, freePitch = 0, 0
+	local freeSpeed = FREE_SPEED
+	local previousCameraType = camera.CameraType
+	local looking = false
+	local freeHint = Components.text({
+		Text = "Free camera: WASD to move, Q / E down and up, hold right click to look, Shift to go faster, wheel to change speed",
+		TextSize = 12,
+		TextColor3 = C.textFaint,
+		Size = UDim2.new(1, 0, 0, 16),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = 6,
+		Visible = false,
+		ZIndex = 31,
+		Parent = bar,
+	})
+
+	local function setFreeCam(on: boolean)
+		if freeCam == on then
+			return
+		end
+		freeCam = on
+		freeHint.Visible = on
+		table.clear(freeKeys)
+		looking = false
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		if on then
+			local look = camera.CFrame.LookVector
+			freeYaw = math.atan2(-look.X, -look.Z)
+			freePitch = math.asin(math.clamp(look.Y, -1, 1))
+			previousCameraType = camera.CameraType
+			camera.CameraType = Enum.CameraType.Scriptable
+			ContextActionService:BindActionAtPriority(FREE_ACTION, function(_, state, input)
+				freeKeys[input.KeyCode] = state == Enum.UserInputState.Begin
+				return Enum.ContextActionResult.Sink
+			end, false, Enum.ContextActionPriority.High.Value, table.unpack(FREE_KEYS))
+		else
+			ContextActionService:UnbindAction(FREE_ACTION)
+			camera.CameraType = previousCameraType
+		end
+	end
+
+	local function moveFreeCam(dt: number)
+		local rotation = CFrame.Angles(0, freeYaw, 0) * CFrame.Angles(freePitch, 0, 0)
+		local direction = Vector3.zero
+		if freeKeys[Enum.KeyCode.W] or freeKeys[Enum.KeyCode.Up] then
+			direction += Vector3.new(0, 0, -1)
+		end
+		if freeKeys[Enum.KeyCode.S] or freeKeys[Enum.KeyCode.Down] then
+			direction += Vector3.new(0, 0, 1)
+		end
+		if freeKeys[Enum.KeyCode.A] or freeKeys[Enum.KeyCode.Left] then
+			direction += Vector3.new(-1, 0, 0)
+		end
+		if freeKeys[Enum.KeyCode.D] or freeKeys[Enum.KeyCode.Right] then
+			direction += Vector3.new(1, 0, 0)
+		end
+		local vertical = 0
+		if freeKeys[Enum.KeyCode.E] or freeKeys[Enum.KeyCode.Space] then
+			vertical += 1
+		end
+		if freeKeys[Enum.KeyCode.Q] or freeKeys[Enum.KeyCode.LeftControl] then
+			vertical -= 1
+		end
+		local boost = if freeKeys[Enum.KeyCode.LeftShift] then 4 else 1
+		local velocity = rotation:VectorToWorldSpace(direction) + Vector3.new(0, vertical, 0)
+		if velocity.Magnitude > 0 then
+			velocity = velocity.Unit * freeSpeed * boost
+		end
+		camera.CFrame = CFrame.new(camera.CFrame.Position + velocity * dt) * rotation
+	end
+
+	table.insert(
+		connections,
+		UserInputService.InputBegan:Connect(function(input)
+			if freeCam and input.UserInputType == Enum.UserInputType.MouseButton2 then
+				looking = true
+				UserInputService.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+			end
+		end)
+	)
+	table.insert(
+		connections,
+		UserInputService.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton2 and looking then
+				looking = false
+				UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+			end
+		end)
+	)
+	table.insert(
+		connections,
+		UserInputService.InputChanged:Connect(function(input, processed)
+			if not freeCam then
+				return
+			end
+			if looking and input.UserInputType == Enum.UserInputType.MouseMovement then
+				freeYaw -= math.rad(input.Delta.X * FREE_LOOK)
+				freePitch = math.clamp(freePitch - math.rad(input.Delta.Y * FREE_LOOK), -1.5, 1.5)
+			elseif input.UserInputType == Enum.UserInputType.MouseWheel and not processed then
+				freeSpeed = math.clamp(freeSpeed * (if input.Position.Z > 0 then 1.25 else 0.8), 4, 400)
+			end
+		end)
+	)
+
 	local function watch(ghost: Ghost?)
 		watched = ghost
+		setFreeCam(false)
 		if ghost then
 			camera.CameraSubject = ghost.subject
 		else
@@ -695,7 +822,7 @@ function Replay.start(screen: ScreenGui, case: any, onStop: () -> (), request: (
 		if cameraSelector then
 			cameraSelector:Destroy()
 		end
-		local options = { { value = "free", label = "My camera" } }
+		local options = { { value = "free", label = "My camera" }, { value = "freecam", label = "Free cam" } }
 		for i, ghost in involved do
 			table.insert(options, { value = tostring(i), label = `Follow {ghost.track.name}` })
 		end
@@ -709,6 +836,9 @@ function Replay.start(screen: ScreenGui, case: any, onStop: () -> (), request: (
 		local selector = Components.selector(options, selected, function(value)
 			if value == "free" then
 				watch(nil)
+			elseif value == "freecam" then
+				watch(nil)
+				setFreeCam(true)
 			elseif value == "other" then
 				otherIndex = otherIndex % #others + 1
 				watch(others[otherIndex])
@@ -801,7 +931,7 @@ function Replay.start(screen: ScreenGui, case: any, onStop: () -> (), request: (
 		if focusBusy or os.clock() - focusClock < FOCUS_EVERY then
 			return
 		end
-		local position = camera.Focus.Position
+		local position = if freeCam then camera.CFrame.Position else camera.Focus.Position
 		if watched and watched.visible then
 			local pivot = watched.model:GetPivot()
 			position = pivot.Position
@@ -877,6 +1007,9 @@ function Replay.start(screen: ScreenGui, case: any, onStop: () -> (), request: (
 					refreshPlay()
 				end
 			end
+			if freeCam then
+				moveFreeCam(dt)
+			end
 			render()
 			streamAround()
 		end)
@@ -928,7 +1061,7 @@ function Replay.start(screen: ScreenGui, case: any, onStop: () -> (), request: (
 		for _, connection in connections do
 			connection:Disconnect()
 		end
-		if watched then
+		if watched or freeCam then
 			watch(nil)
 		end
 		for _, ghost in ghosts do

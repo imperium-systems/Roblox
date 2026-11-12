@@ -58,7 +58,7 @@ local SECTIONS = {
 		permission = "quaesitor.view",
 		summary = "The server keeps the last minutes of every character's position, outfit and tool in hand, Lictor detections, deaths and staff actions. A report (player or bug) or a Lictor alert freezes them into a case file for the players involved and the players around them (quaesitor.others), with the minutes before and a few seconds after (quaesitor.after), linked from the report and the Anticheat page. Case files are deleted after the number of days in Settings (quaesitor.retention_days).",
 		commands = {
-			{ "quaesitor.view", "Replay", "Hides the panel and plays the case: the players appear in the world with their avatar, accessories and tools, on your screen only, and the map loads around what you watch. Pause, scrub the timeline, change the speed, hide the other players and follow any of them with the camera." },
+			{ "quaesitor.view", "Replay", "Hides the panel and plays the case: the players appear in the world with their avatar, accessories and tools, on your screen only, and the map loads around what you watch. Pause, scrub the timeline, change the speed, hide the other players, follow any of them with the camera or fly a free camera (WASD, Q / E, right click to look)." },
 		},
 	},
 	{
