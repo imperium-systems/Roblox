@@ -21,6 +21,7 @@ local RETRIES = 3
 export type KeyStore = {
 	read: (self: KeyStore, key: string) -> (boolean, any),
 	update: (self: KeyStore, key: string, fn: (previous: any) -> any) -> (boolean, any),
+	remove: (self: KeyStore, key: string) -> boolean,
 }
 
 local Tabularius = {}
@@ -83,6 +84,21 @@ function Tabularius.keyStore(name: string): KeyStore
 			logger.err(`write {name}/{key}:`, value)
 		end
 		return ok, value
+	end
+
+	function keyStore.remove(_self: KeyStore, key: string): boolean
+		if inMemory or not store then
+			localValues[key] = nil
+			return true
+		end
+		local active = store :: DataStore
+		local ok, err = withRetries(function()
+			return active:RemoveAsync(key)
+		end)
+		if not ok then
+			logger.err(`remove {name}/{key}:`, err)
+		end
+		return ok
 	end
 
 	return keyStore :: any

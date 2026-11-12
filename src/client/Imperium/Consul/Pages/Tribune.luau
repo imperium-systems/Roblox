@@ -450,6 +450,35 @@ return function(ctx: any, frame: Frame)
 		end
 	end
 
+	-- Quaesitor case file of a player report: the last minutes of both players.
+	local function caseCard(order: number, ticket: any)
+		if ticket.kind ~= "player" or not ctx.can("quaesitor.view") then
+			return
+		end
+		local card = Components.card({ LayoutOrder = order, Parent = scroller }, { Components.stack("V", 8) })
+		Components.section("Case file", 0).Parent = card
+		local case = detail.case
+		if not case then
+			Components.paragraph(
+				"No case file for this report: recording was off, or it is still being saved.",
+				{ TextSize = Theme.sizes.small + 1, TextColor3 = C.textFaint, LayoutOrder = 1, Parent = card }
+			)
+			return
+		end
+		local events = if case.eventCount == 1 then "1 event" else `{case.eventCount} events`
+		Components.paragraph(
+			`Case #{case.id}: positions of both players over the {math.floor(case.duration)} s before the report, {events}. Deleted on {Core.formatDate(case.expiresAt)}.`,
+			{ TextSize = Theme.sizes.small + 1, TextColor3 = C.textMuted, LayoutOrder = 1, Parent = card }
+		)
+		local row = buttonRow(card, 2)
+		smallButton(row, "Replay", "primary", function()
+			ctx.open("Quaesitor", { id = case.id, replay = true })
+		end, 1)
+		smallButton(row, "Open case", "secondary", function()
+			ctx.open("Quaesitor", case.id)
+		end, 2)
+	end
+
 	local function closingCard(order: number, ticket: any)
 		local card = Components.card({ LayoutOrder = order, Parent = scroller }, { Components.stack("V", 8) })
 		if ticket.status == "closed" then
@@ -553,7 +582,8 @@ return function(ctx: any, frame: Frame)
 		contextLine(card, ticket, 4)
 
 		closingCard(2, ticket)
-		teleportCard(3, ticket)
+		caseCard(3, ticket)
+		teleportCard(4, ticket)
 
 		-- The two players side by side, or one under the other on a narrow window.
 		local wide = scroller.AbsoluteSize.X >= TWO_COLUMNS and detail.target ~= nil
@@ -561,7 +591,7 @@ return function(ctx: any, frame: Frame)
 			BackgroundTransparency = 1,
 			Size = UDim2.new(1, 0, 0, 0),
 			AutomaticSize = Enum.AutomaticSize.Y,
-			LayoutOrder = 4,
+			LayoutOrder = 5,
 			Parent = scroller,
 		})
 		local layout = Components.stack(if wide then "H" else "V", 10)
@@ -577,7 +607,7 @@ return function(ctx: any, frame: Frame)
 			Components.paragraph("The chat is still going through the Roblox filter: it appears in a few seconds.", {
 				TextSize = 12,
 				TextColor3 = C.textFaint,
-				LayoutOrder = 5,
+				LayoutOrder = 6,
 				Parent = scroller,
 			})
 		end
@@ -621,7 +651,12 @@ return function(ctx: any, frame: Frame)
 	end
 
 	return {
-		show = function()
+		-- argument: a ticket id to open directly (from a case file).
+		show = function(id: number?)
+			if type(id) == "number" then
+				openId = id
+				commentDraft = ""
+			end
 			task.spawn(load)
 		end,
 		update = function(kind: string, data: any)

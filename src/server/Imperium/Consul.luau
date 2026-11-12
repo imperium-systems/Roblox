@@ -19,11 +19,22 @@ local Veredarius = require(Imperium.Veredarius)
 local logger = Scriba.scoped("Consul")
 
 local Consul = {
-	dependencies = { "Senatus", "Praetor", "Praefectus", "Censor", "Lex", "Praeco", "Lictor", "Tribune" },
+	dependencies = {
+		"Senatus",
+		"Praetor",
+		"Praefectus",
+		"Censor",
+		"Lex",
+		"Praeco",
+		"Lictor",
+		"Tribune",
+		"Quaesitor",
+	},
 }
 
 local Senatus: any
 local Lictor: any
+local Quaesitor: any
 local Tribune: any
 local Praetor: any
 local Praefectus: any
@@ -547,11 +558,12 @@ actions["censor.log"] = {
 
 actions["lictor.list"] = {
 	permission = "lictor.view",
-	execute = function()
+	execute = function(actor)
 		return success({
 			suspects = Lictor.suspects(),
 			recent = Lictor.recent(30),
 			thresholds = Lictor.thresholds(),
+			cases = if Senatus.can(actor, "quaesitor.view") then Quaesitor.list("lictor", 8) else nil,
 		})
 	end,
 }
@@ -643,6 +655,7 @@ actions["tribune.detail"] = {
 			target = if ticket.targetId then personOf(actor, ticket.targetId, ticket.targetName, log) else nil,
 			maxComment = Tribune.MAX_COMMENT,
 			staffPoint = staffPoint() ~= nil,
+			case = if Senatus.can(actor, "quaesitor.view") then Quaesitor.caseOfTicket(ticket.id) else nil,
 		})
 	end,
 }
@@ -707,6 +720,50 @@ actions["tribune.close"] = {
 	end,
 }
 
+local SOURCES = { report = true, lictor = true }
+
+actions["quaesitor.list"] = {
+	permission = "quaesitor.view",
+	execute = function(_, d)
+		local cases = Quaesitor.list(if SOURCES[d.source] then d.source else nil, 60)
+		if not cases then
+			return failure("save_failed")
+		end
+		return success({
+			cases = cases,
+			enabled = Lex.get("quaesitor.enabled"),
+			window = Lex.get("quaesitor.window"),
+			retention = Lex.get("quaesitor.retention_days"),
+		})
+	end,
+}
+
+-- The full case: positions and events. Opening one is logged, like any look at a record.
+actions["quaesitor.get"] = {
+	permission = "quaesitor.view",
+	execute = function(actor, d)
+		if not Core.isPositiveInteger(d.id) then
+			return failure("case_not_found")
+		end
+		local case, code = Quaesitor.get(d.id)
+		if not case then
+			return failure(code or "case_not_found")
+		end
+		local target = nil
+		for _, person in case.players do
+			if person.role ~= "reporter" then
+				target = { name = person.name, userId = person.userId }
+				break
+			end
+		end
+		Censor.logAction(actor, "case opened", target, `#{case.id} {case.label}`)
+		return success({
+			case = case,
+			ticketAccess = Senatus.can(actor, "tribune.handle"),
+		})
+	end,
+}
+
 -- Broadcast to open panels --------------------------------------------------
 
 local function staffWith(permission: string): { Player }
@@ -734,6 +791,7 @@ function Consul.init(deps)
 	Praeco = deps.Praeco
 	Lictor = deps.Lictor
 	Tribune = deps.Tribune
+	Quaesitor = deps.Quaesitor
 
 	Lex.define("consul.staff_point", {
 		default = "ImperiumStaffPoint",
@@ -803,6 +861,15 @@ function Consul.start()
 				text = `{detection.label} · {detection.name}`,
 				duration = 8,
 			})
+		end
+	end)
+	-- A new or deleted case refreshes the case list, and the ticket or Lictor page that links to it.
+	Signum.on("quaesitor.case", function(summary)
+		push("quaesitor", summary and summary.id, "quaesitor.view")
+		if summary and summary.ticketId then
+			push("tribune", summary.ticketId, "tribune.handle")
+		elseif summary and summary.source == "lictor" then
+			push("lictor", nil, "lictor.view")
 		end
 	end)
 	-- Every change refreshes the page; a new ticket also alerts staff wherever they are.

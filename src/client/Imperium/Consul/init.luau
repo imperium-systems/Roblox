@@ -48,6 +48,7 @@ local MESSAGES: { [string]: string } = {
 	ticket_closed = "This report is already closed.",
 	already_claimed = "Another staff member is handling this report.",
 	not_claimed = "Nobody has claimed this report.",
+	case_not_found = "This case file no longer exists, or is still being saved.",
 	no_staff_point = "No staff point: add a part named ImperiumStaffPoint in Workspace (or change consul.staff_point in Settings)."
 }
 
@@ -57,6 +58,7 @@ local SIMPLE_VIEW = {
 	{ page = "Players", name = "Players", description = "Sanctions and records" },
 	{ page = "Tribune", name = "Reports", description = "Sent by players" },
 	{ page = "Lictor", name = "Anticheat", description = "Suspicious players" },
+	{ page = "Quaesitor", name = "Case files", description = "Replays of incidents" },
 	{ page = "Server", name = "Server", description = "Announcements, restart" },
 	{ page = "Log", name = "Log", description = "Staff actions" },
 	{ page = "Settings", name = "Settings", description = "Game values" },
@@ -77,6 +79,8 @@ export type Context = {
 	confirm: (title: string, message: string, label: string, onConfirm: () -> ()) -> (),
 	open: (tab: string, argument: any?) -> (),
 	errorMessage: (code: string?) -> string,
+	screen: ScreenGui,
+	setVisible: (visible: boolean) -> (),
 }
 
 local function build(access: { [string]: any })
@@ -427,6 +431,10 @@ local function build(access: { [string]: any })
 		confirm = confirm,
 		open = open,
 		errorMessage = errorMessage,
+		screen = screen,
+		setVisible = function(visible: boolean)
+			toggle(visible)
+		end,
 	}
 
 	-- A page is only built when the rank grants access to it.

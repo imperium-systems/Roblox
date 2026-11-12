@@ -179,6 +179,7 @@ local KNOWN_PERMISSIONS = {
 	"censor.log",
 	"lictor.view",
 	"lictor.clear",
+	"quaesitor.view",
 	"tribune.handle",
 	"tribune.manage",
 	"praetor.warn",
