@@ -467,6 +467,9 @@ return function(ctx: any, frame: Frame)
 		end
 		local events = if case.eventCount == 1 then "1 event" else `{case.eventCount} events`
 		local who = if ticket.kind == "bug" then "the reporter" else "both players"
+		if (case.others or 0) > 0 then
+			who ..= ` and {case.others} player{if case.others == 1 then "" else "s"} around`
+		end
 		local before = math.floor(case.triggerAt or case.duration)
 		local after = math.floor(case.duration - before)
 		Components.paragraph(

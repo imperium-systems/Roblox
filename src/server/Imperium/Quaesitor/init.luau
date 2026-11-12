@@ -1,16 +1,20 @@
 --!strict
 -- Quaesitor: investigations.
--- Keeps a rolling record of the last minutes on the server: the position and state of
--- each character (once per second), Lictor detections, deaths and staff actions.
+-- Keeps a rolling record of the last minutes on the server: the position, state, worn
+-- accessories and tool in hand of each character (every quaesitor.interval seconds),
+-- Lictor detections, deaths and staff actions.
 -- When a report is sent (Tribune, player or bug) or a Lictor alert fires, keeps recording a
 -- few more seconds, then freezes the minutes before and the seconds after into a case file
--- for the players involved and stores it with Tabularius.
--- Staff replay a case from the panel (Consul): ghosts move on the viewer's screen only.
+-- for the players involved (and the players around them, or everyone, per Lex) and stores
+-- it with Tabularius.
+-- Staff replay a case from the panel (Consul): avatars move on the viewer's screen only.
+-- During a replay the server streams the map around what the viewer watches.
 -- Case files are deleted after the number of days set in Lex.
 --
 -- Does not detect cheating (Lictor), decide sanctions (Praetor) or record the chat
 -- (Tribune already attaches the filtered chat to its tickets).
 
+local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -18,22 +22,31 @@ local Imperium = ReplicatedStorage.ImperiumShared.Imperium
 local Scriba = require(Imperium.Scriba)
 local Signum = require(Imperium.Signum)
 
+local Appearance = require(script.Appearance)
+
 local logger = Scriba.scoped("Quaesitor")
 
-local SAMPLE = 1 -- seconds between two samples of every character
 local MAX_CASES = 200 -- kept across all servers; the oldest go first
+local MAX_SIZE = 3_800_000 -- characters of a saved case; a DataStore key holds 4 MB
 local LICTOR_GAP = 60 -- seconds between two Lictor cases about the same player
 local SWEEP = 3600 -- seconds between two checks for expired cases
 local DAY = 86400
+local GHOSTS_KEPT = 60 -- seconds the avatars of a replay wait for the viewer to copy them
+local FOCUS_GAP = 0.5 -- seconds between two streaming requests of a viewer
 
 -- Sample flags, added together.
 local DEAD = 1
 local SEATED = 2
 local AIRBORNE = 4
 
--- One sample: { t, x, y, z, yaw (degrees), health, flags }.
--- In memory t is os.clock(); in a case it is seconds since the start of the case.
-type Sample = { number }
+-- Who else goes into a case, besides the players involved.
+local OTHERS = { none = true, nearby = true, all = true }
+
+-- One sample: { t, x, y, z, yaw (degrees), health, flags, tool, outfit }.
+-- In memory t is os.clock(), tool the name of the tool in hand and outfit the names of the
+-- accessories worn. In a case t is seconds since the start of the case, tool an index in
+-- track.tools (0 for none) and outfit an index in track.outfits.
+type Sample = { any }
 
 type Frame = { t: number, players: { [number]: Sample } }
 
@@ -41,10 +54,12 @@ export type Event = {
 	t: number,
 	kind: string, -- "trigger" | "lictor" | "death" | "staff" | "left"
 	userIds: { number }?, -- only in memory: who the event is about
-	userId: number?, -- in a case: the involved player it is about
+	userId: number?, -- in a case: the recorded player it is about
 	text: string,
 }
 
+-- role: "reporter" | "reported" | "suspect" for the players involved,
+-- "nearby" | "other" for the players recorded with them.
 export type Person = { userId: number, name: string, role: string }
 
 export type Summary = {
@@ -52,16 +67,24 @@ export type Summary = {
 	source: string, -- "report" | "lictor"
 	ticketId: number?,
 	label: string,
-	players: { Person },
+	players: { Person }, -- the players involved only
+	others: number?, -- players recorded with them
 	date: number, -- when the case was created
 	startedAt: number, -- wall time of the first sample
 	duration: number,
 	triggerAt: number?, -- seconds from the start of the case to the report or alert
+	interval: number?, -- seconds between two samples
 	eventCount: number,
 	expiresAt: number?, -- computed when listed, never stored
 }
 
-export type Track = Person & { samples: { Sample } }
+export type Track = Person & {
+	samples: { Sample },
+	look: Appearance.Look?,
+	accessories: { string },
+	tools: { string },
+	outfits: { { number } },
+}
 
 export type Case = Summary & { tracks: { Track }, events: { Event } }
 
@@ -76,11 +99,17 @@ local Lex: any
 
 local frames: { Frame } = {}
 local events: { Event } = {}
+local names: { [number]: string } = {}
 local lastLictorCase: { [number]: number } = {}
 
 -- Cases waiting for the seconds after their trigger; saved at once if the server closes.
 type Pending = { finish: () -> () }
 local pending: { Pending } = {}
+
+-- Replays in progress: avatars waiting to be copied, and the streaming focus.
+type Viewer = { ghosts: Instance?, focus: BasePart?, lastFocus: number }
+local viewers: { [Player]: Viewer } = {}
+local focusFolder: Folder? = nil
 
 local function round1(n: number): number
 	return math.round(n * 10) / 10
@@ -92,7 +121,7 @@ local function sampleOf(player: Player, now: number): Sample?
 	local character = player.Character
 	local root = character and character.PrimaryPart
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-	if not root or not humanoid then
+	if not character or not root or not humanoid then
 		return nil
 	end
 	local p = root.Position
@@ -107,6 +136,7 @@ local function sampleOf(player: Player, now: number): Sample?
 	if humanoid.FloorMaterial == Enum.Material.Air then
 		flags += AIRBORNE
 	end
+	local outfit, tool = Appearance.itemsOf(character)
 	return {
 		now,
 		round1(p.X),
@@ -115,6 +145,8 @@ local function sampleOf(player: Player, now: number): Sample?
 		math.round(math.deg(math.atan2(-look.X, -look.Z))),
 		math.round(humanoid.Health),
 		flags,
+		tool,
+		outfit,
 	}
 end
 
@@ -133,6 +165,7 @@ local function recordFrame()
 	local now = os.clock()
 	local frame: Frame = { t = now, players = {} }
 	for _, player in Players:GetPlayers() do
+		names[player.UserId] = player.Name
 		local sample = sampleOf(player, now)
 		if sample then
 			frame.players[player.UserId] = sample
@@ -174,37 +207,144 @@ end
 
 -- Case files ---------------------------------------------------------------------------
 
--- Copies the record of the involved players from the window before the trigger until now,
--- with times relative to its start.
+-- The players recorded with the involved ones: those who came within the Lex radius of
+-- one of them, or everyone on the server.
+local function othersOf(involved: { Person }, inRange: { Frame }): { Person }
+	local mode = Lex.get("quaesitor.others")
+	if not OTHERS[mode] then
+		mode = "nearby"
+	end
+	if mode == "none" then
+		return {}
+	end
+	local isInvolved = {}
+	for _, person in involved do
+		isInvolved[person.userId] = true
+	end
+	local radius = Lex.get("quaesitor.nearby_radius")
+	local found: { [number]: boolean } = {}
+	for _, frame in inRange do
+		for userId, sample in frame.players do
+			if isInvolved[userId] or found[userId] then
+				continue
+			end
+			if mode == "all" then
+				found[userId] = true
+				continue
+			end
+			local position = Vector3.new(sample[2], sample[3], sample[4])
+			for _, person in involved do
+				local other = frame.players[person.userId]
+				if other and (Vector3.new(other[2], other[3], other[4]) - position).Magnitude <= radius then
+					found[userId] = true
+					break
+				end
+			end
+		end
+	end
+	local list = {}
+	for userId in found do
+		table.insert(list, {
+			userId = userId,
+			name = names[userId] or tostring(userId),
+			role = if mode == "all" then "other" else "nearby",
+		})
+	end
+	table.sort(list, function(a, b)
+		return a.name < b.name
+	end)
+	return list
+end
+
+-- Turns the samples of one player into a track: relative times, tools and outfits as indices.
+local function trackOf(person: Person, inRange: { Frame }, start: number): Track
+	local track: Track = {
+		userId = person.userId,
+		name = person.name,
+		role = person.role,
+		samples = {},
+		accessories = {},
+		tools = {},
+		outfits = {},
+	}
+	local toolIndex: { [string]: number } = {}
+	local accessoryIndex: { [string]: number } = {}
+	local outfitIndex: { [string]: number } = {}
+	for _, frame in inRange do
+		local sample = frame.players[person.userId]
+		if not sample then
+			continue
+		end
+		local tool = 0
+		if sample[8] ~= "" then
+			tool = toolIndex[sample[8]]
+			if not tool then
+				table.insert(track.tools, sample[8])
+				tool = #track.tools
+				toolIndex[sample[8]] = tool
+			end
+		end
+		local outfit = outfitIndex[sample[9]]
+		if not outfit then
+			local worn = {}
+			if sample[9] ~= "" then
+				for _, name in string.split(sample[9], "\n") do
+					local i = accessoryIndex[name]
+					if not i then
+						table.insert(track.accessories, name)
+						i = #track.accessories
+						accessoryIndex[name] = i
+					end
+					table.insert(worn, i)
+				end
+			end
+			table.insert(track.outfits, worn)
+			outfit = #track.outfits
+			outfitIndex[sample[9]] = outfit
+		end
+		table.insert(track.samples, {
+			round1(sample[1] - start),
+			sample[2],
+			sample[3],
+			sample[4],
+			sample[5],
+			sample[6],
+			sample[7],
+			tool,
+			outfit,
+		})
+	end
+	local player = Players:GetPlayerByUserId(person.userId)
+	if player then
+		track.look = Appearance.lookOf(player)
+	end
+	return track
+end
+
+-- Copies the record from the window before the trigger until now, with times relative to
+-- its start. Returns the tracks, events, wall time of the start, duration and trigger time.
 local function freeze(involved: { Person }, trigger: number, label: string): ({ Track }, { Event }, number, number, number)
 	recordFrame()
 	local now = os.clock()
 	local from = trigger - Lex.get("quaesitor.window")
-	local start = now
+	local inRange: { Frame } = {}
 	for _, frame in frames do
 		if frame.t >= from then
-			start = frame.t
-			break
+			table.insert(inRange, frame)
 		end
+	end
+	local start = if inRange[1] then inRange[1].t else now
+
+	local recorded = table.clone(involved)
+	for _, other in othersOf(involved, inRange) do
+		table.insert(recorded, other)
 	end
 
 	local tracks: { Track } = {}
-	for _, person in involved do
-		local samples = {}
-		for _, frame in frames do
-			local sample = frame.players[person.userId]
-			if sample and frame.t >= start then
-				local copy = table.clone(sample)
-				copy[1] = round1(sample[1] - start)
-				table.insert(samples, copy)
-			end
-		end
-		table.insert(tracks, {
-			userId = person.userId,
-			name = person.name,
-			role = person.role,
-			samples = samples,
-		})
+	local isRecorded: { [number]: boolean } = {}
+	for _, person in recorded do
+		table.insert(tracks, trackOf(person, inRange, start))
+		isRecorded[person.userId] = true
 	end
 
 	local triggerAt = round1(math.max(trigger - start, 0))
@@ -218,24 +358,57 @@ local function freeze(involved: { Person }, trigger: number, label: string): ({ 
 			table.insert(caseEvents, { t = triggerAt, kind = "trigger", text = label })
 			triggerAdded = true
 		end
-		for _, person in involved do
-			if table.find(event.userIds or {}, person.userId) then
+		for _, userId in event.userIds or {} do
+			if isRecorded[userId] then
 				table.insert(caseEvents, {
 					t = round1(event.t - start),
 					kind = event.kind,
-					userId = person.userId,
+					userId = userId,
 					text = event.text,
 				})
 				break
 			end
 		end
 	end
-
 	if not triggerAdded then
 		table.insert(caseEvents, { t = triggerAt, kind = "trigger", text = label })
 	end
 
 	return tracks, caseEvents, os.time() - math.round(now - start), round1(now - start), triggerAt
+end
+
+-- Keeps one sample out of two until the case fits in a key: the players recorded with the
+-- involved ones first, then everyone.
+local function fit(case: any)
+	local function thin(onlyOthers: boolean): boolean
+		local changed = false
+		for _, track in case.tracks do
+			if onlyOthers and (track.role ~= "nearby" and track.role ~= "other") then
+				continue
+			end
+			local samples = track.samples
+			if #samples > 2 then
+				local kept = {}
+				for i, sample in samples do
+					if i % 2 == 1 or i == #samples then
+						table.insert(kept, sample)
+					end
+				end
+				track.samples = kept
+				changed = true
+			end
+		end
+		return changed
+	end
+	for _ = 1, 12 do
+		if #HttpService:JSONEncode(case) <= MAX_SIZE then
+			return
+		end
+		if not thin(true) and not thin(false) then
+			return
+		end
+		logger.info(`case "{case.label}" too large, fewer samples kept`)
+	end
 end
 
 local function removeFromIndex(ids: { number })
@@ -282,6 +455,7 @@ local function save(base: { [string]: any }, tracks: { Track }, caseEvents: { Ev
 	local case = table.clone(saved) :: any
 	case.tracks = tracks
 	case.events = caseEvents
+	fit(case)
 	local written = keyStore:update(`case_{saved.id}`, function()
 		return case
 	end)
@@ -317,10 +491,12 @@ local function createCase(source: string, ticketId: number?, label: string, invo
 			ticketId = ticketId,
 			label = label,
 			players = involved,
+			others = #tracks - #involved,
 			date = date,
 			startedAt = startedAt,
 			duration = duration,
 			triggerAt = triggerAt,
+			interval = Lex.get("quaesitor.interval"),
 			eventCount = #caseEvents - 1, -- the trigger itself is not counted
 		}
 		save(base, tracks, caseEvents)
@@ -424,6 +600,105 @@ function Quaesitor.get(id: number): (Case?, string?)
 	return withExpiry(case) :: any
 end
 
+-- Replays -------------------------------------------------------------------------------
+
+local function viewerOf(player: Player): Viewer
+	local viewer = viewers[player]
+	if not viewer then
+		viewer = { lastFocus = 0 }
+		viewers[player] = viewer
+	end
+	return viewer
+end
+
+local function dropGhosts(viewer: Viewer)
+	if viewer.ghosts then
+		viewer.ghosts:Destroy()
+		viewer.ghosts = nil
+	end
+end
+
+-- Builds the avatars of a case and hands them to the viewer alone (PlayerGui replicates
+-- to its owner only); the client copies them into its own replay.
+-- Returns (folder name, avatar count) or (nil, error_code).
+function Quaesitor.ghosts(player: Player, id: number): (string?, number | string)
+	local case, code = Quaesitor.get(id)
+	if not case then
+		return nil, code or "case_not_found"
+	end
+	local gui = player:FindFirstChildOfClass("PlayerGui")
+	if not gui then
+		return nil, "case_not_found"
+	end
+	local viewer = viewerOf(player)
+	dropGhosts(viewer)
+	local folder = Appearance.build(case)
+	local count = #folder:GetChildren()
+	folder.Name = `ImperiumQuaesitorGhosts{HttpService:GenerateGUID(false)}`
+	folder.Parent = gui
+	viewer.ghosts = folder
+	task.delay(GHOSTS_KEPT, function()
+		if viewer.ghosts == folder then
+			dropGhosts(viewer)
+		end
+	end)
+	return folder.Name, count
+end
+
+-- Streams the map around a point of the replay for its viewer, or back around their
+-- character when position is nil.
+function Quaesitor.focus(player: Player, position: Vector3?)
+	local viewer = viewerOf(player)
+	if not position then
+		if viewer.focus then
+			viewer.focus:Destroy()
+			viewer.focus = nil
+		end
+		player.ReplicationFocus = nil
+		return
+	end
+	if os.clock() - viewer.lastFocus < FOCUS_GAP then
+		return
+	end
+	viewer.lastFocus = os.clock()
+	if not focusFolder or not focusFolder.Parent then
+		local folder = Instance.new("Folder")
+		folder.Name = "ImperiumQuaesitorFocus"
+		folder.Parent = workspace
+		focusFolder = folder
+	end
+	local part = viewer.focus
+	if not part then
+		local created = Instance.new("Part")
+		created.Name = player.Name
+		created.Anchored = true
+		created.CanCollide = false
+		created.CanQuery = false
+		created.CanTouch = false
+		created.Transparency = 1
+		created.Size = Vector3.one
+		created.Parent = focusFolder
+		viewer.focus = created
+		part = created
+	end
+	(part :: BasePart).Position = position
+	player.ReplicationFocus = part
+	if workspace.StreamingEnabled then
+		task.spawn(pcall, player.RequestStreamAroundAsync, player, position, 5)
+	end
+end
+
+-- The viewer closed the replay.
+function Quaesitor.endReplay(player: Player)
+	local viewer = viewers[player]
+	if not viewer then
+		return
+	end
+	dropGhosts(viewer)
+	Quaesitor.focus(player, nil)
+	viewers[player] = nil
+end
+
 -- Lifecycle -----------------------------------------------------------------------------
 
 function Quaesitor.init(deps)
@@ -434,6 +709,13 @@ function Quaesitor.init(deps)
 		default = true,
 		type = "boolean",
 		description = "Records the last minutes and creates case files on reports and Lictor alerts.",
+	})
+	Lex.define("quaesitor.interval", {
+		default = 0.5,
+		type = "number",
+		description = "Seconds between two recorded positions. Lower is smoother but makes bigger case files.",
+		min = 0.1,
+		max = 2,
 	})
 	Lex.define("quaesitor.window", {
 		default = 180,
@@ -448,6 +730,18 @@ function Quaesitor.init(deps)
 		description = "Seconds still recorded after the report or alert before the case file is saved.",
 		min = 0,
 		max = 120,
+	})
+	Lex.define("quaesitor.others", {
+		default = "nearby",
+		type = "string",
+		description = 'Other players recorded in a case file: "nearby" (within quaesitor.nearby_radius of a player involved), "all" or "none".',
+	})
+	Lex.define("quaesitor.nearby_radius", {
+		default = 100,
+		type = "number",
+		description = "Studs around a player involved within which other players are recorded.",
+		min = 10,
+		max = 5000,
 	})
 	Lex.define("quaesitor.retention_days", {
 		default = 14,
@@ -513,11 +807,12 @@ function Quaesitor.start()
 	Players.PlayerRemoving:Connect(function(player)
 		addEvent("left", { player.UserId }, `{player.Name} left the server`)
 		lastLictorCase[player.UserId] = nil
+		Quaesitor.endReplay(player)
 	end)
 
 	task.spawn(function()
 		while true do
-			task.wait(SAMPLE)
+			task.wait(Lex.get("quaesitor.interval"))
 			if Lex.get("quaesitor.enabled") then
 				local ok, err = pcall(recordFrame)
 				if not ok then

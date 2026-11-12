@@ -23,6 +23,8 @@ local ROLES: { [string]: string } = {
 	reporter = "Reporter",
 	reported = "Reported",
 	suspect = "Suspect",
+	nearby = "Nearby",
+	other = "On server",
 }
 
 local KINDS: { [string]: { label: string, color: Color3 } } = {
@@ -122,7 +124,7 @@ return function(ctx: any, frame: Frame)
 			detail = { case = case, ticketAccess = ctx.can("tribune.handle") }
 			ctx.setVisible(true)
 			ctx.open("Quaesitor")
-		end)
+		end, ctx.request)
 	end
 
 	local function caseHead(parent: Instance, case: any)
@@ -162,7 +164,7 @@ return function(ctx: any, frame: Frame)
 		})
 		local events = if case.eventCount == 1 then "1 event" else `{case.eventCount} events`
 		Components.paragraph(
-			`{Core.formatDate(case.date)}  ·  {minutes(case.duration)} recorded  ·  {events}  ·  deleted on {Core.formatDate(case.expiresAt)}`,
+			`{Core.formatDate(case.date)}  ·  {minutes(case.duration)} recorded  ·  {events}{if (case.others or 0) > 0 then `  ·  {case.others} other player{if case.others == 1 then "" else "s"}` else ""}  ·  deleted on {Core.formatDate(case.expiresAt)}`,
 			{
 				TextSize = 12,
 				TextColor3 = C.textFaint,
@@ -214,7 +216,11 @@ return function(ctx: any, frame: Frame)
 	local function drawList()
 		local count = #state.cases
 		topLabel.Text = if count == 1 then "1 case file" else `{count} case files`
-		local intro = `A case keeps the positions, Lictor detections, deaths and staff actions of the players involved, from {state.window} s before a report (player or bug) or a Lictor alert until {state.after} s after it. It is saved once those seconds have passed, and deleted after {state.retention} days.`
+		local others = if state.others == "all"
+			then " and of every other player on the server"
+			elseif state.others == "none" then ""
+			else ` and of the players within {state.radius} studs of them`
+		local intro = `A case keeps the positions (every {state.interval} s), outfits, tools, Lictor detections, deaths and staff actions of the players involved{others}, from {state.window} s before a report (player or bug) or a Lictor alert until {state.after} s after it. It is saved once those seconds have passed, and deleted after {state.retention} days.`
 		if not state.enabled then
 			intro ..= " Recording is off (quaesitor.enabled in Settings)."
 		end
@@ -255,7 +261,7 @@ return function(ctx: any, frame: Frame)
 			end, 2)
 		end
 		Components.paragraph(
-			"Replay hides the panel and shows the players as ghosts in the world, on your screen only. Nobody else sees them, and your character does not move.",
+			"Replay hides the panel and shows the players in the world with their avatar, accessories and tools, on your screen only. Nobody else sees them, and your character does not move.",
 			{
 				TextSize = 12,
 				TextColor3 = C.textFaint,
@@ -267,7 +273,14 @@ return function(ctx: any, frame: Frame)
 		-- Who was recorded, and for how long.
 		local people = Components.card({ LayoutOrder = 2, Parent = scroller }, { Components.stack("V", 6) })
 		Components.section("Players", 0).Parent = people
+		local othersShown = false
 		for i, track in case.tracks do
+			-- The players recorded with the involved ones come after them.
+			if not othersShown and (track.role == "nearby" or track.role == "other") then
+				othersShown = true
+				Components.section(if track.role == "nearby" then "Nearby players" else "Other players", 3 * i - 1).Parent =
+					people
+			end
 			local samples = track.samples
 			local line = `{ROLES[track.role] or track.role}: {track.name} ({track.userId})`
 			if #samples > 0 then
@@ -277,11 +290,11 @@ return function(ctx: any, frame: Frame)
 			end
 			Components.paragraph(line, {
 				TextSize = Theme.sizes.small + 1,
-				LayoutOrder = 2 * i,
+				LayoutOrder = 3 * i,
 				Parent = people,
 			})
 			if ctx.can("censor.view") then
-				local recordRow = buttonRow(people, 2 * i + 1)
+				local recordRow = buttonRow(people, 3 * i + 1)
 				smallButton(recordRow, `Record of {track.name}`, "ghost", function()
 					ctx.open("Players", track.userId)
 				end, 1)

@@ -734,6 +734,9 @@ actions["quaesitor.list"] = {
 			enabled = Lex.get("quaesitor.enabled"),
 			window = Lex.get("quaesitor.window"),
 			after = Lex.get("quaesitor.after"),
+			interval = Lex.get("quaesitor.interval"),
+			others = Lex.get("quaesitor.others"),
+			radius = Lex.get("quaesitor.nearby_radius"),
 			retention = Lex.get("quaesitor.retention_days"),
 		})
 	end,
@@ -762,6 +765,45 @@ actions["quaesitor.get"] = {
 			case = case,
 			ticketAccess = Senatus.can(actor, "tribune.handle"),
 		})
+	end,
+}
+
+-- Avatars of a replay, handed to the viewer alone.
+actions["quaesitor.ghosts"] = {
+	permission = "quaesitor.view",
+	execute = function(actor, d)
+		if not Core.isPositiveInteger(d.id) then
+			return failure("case_not_found")
+		end
+		local folder, result = Quaesitor.ghosts(actor, d.id)
+		if not folder then
+			return failure(result :: string)
+		end
+		return success({ folder = folder, count = result })
+	end,
+}
+
+-- Streams the map around what the viewer watches during a replay.
+actions["quaesitor.focus"] = {
+	permission = "quaesitor.view",
+	execute = function(actor, d)
+		if not (Core.isNumber(d.x) and Core.isNumber(d.y) and Core.isNumber(d.z)) then
+			return failure("invalid_value")
+		end
+		local position = Vector3.new(d.x, d.y, d.z)
+		if position.Magnitude > 1e6 then
+			return failure("invalid_value")
+		end
+		Quaesitor.focus(actor, position)
+		return success()
+	end,
+}
+
+actions["quaesitor.end"] = {
+	permission = "quaesitor.view",
+	execute = function(actor)
+		Quaesitor.endReplay(actor)
+		return success()
 	end,
 }
 

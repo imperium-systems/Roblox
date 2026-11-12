@@ -228,7 +228,7 @@ return function(ctx: any, frame: Frame)
 		if state.cases then
 			Components.section("Case files from alerts", base).Parent = scroller
 			if #state.cases == 0 then
-				Components.paragraph("No alert has created a case file yet.", {
+				Components.paragraph(`No alert has created a case file yet. An alert fires when a score reaches {t.alert}; detections far apart in time do not add up, since scores drop.`, {
 					TextColor3 = C.textFaint,
 					TextSize = Theme.sizes.small + 1,
 					LayoutOrder = base + 1,
