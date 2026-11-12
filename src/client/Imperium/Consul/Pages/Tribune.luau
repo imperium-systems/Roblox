@@ -31,6 +31,18 @@ local function statusOf(ticket: any): (string, Color3)
 	return "Dismissed", C.textMuted
 end
 
+-- Names of the reported players (older tickets only have targetName).
+local function targetNames(ticket: any): string?
+	if ticket.targets then
+		local names = {}
+		for _, target in ticket.targets do
+			table.insert(names, target.name)
+		end
+		return table.concat(names, ", ")
+	end
+	return ticket.targetName
+end
+
 local function clock(date: number): string
 	return os.date("%H:%M:%S", date) :: string
 end
@@ -164,8 +176,9 @@ return function(ctx: any, frame: Frame)
 		badge.Parent = head
 
 		local who = `From <b>{ticket.reporterName}</b>`
-		if ticket.targetName then
-			who ..= ` about <b>{ticket.targetName}</b>`
+		local names = targetNames(ticket)
+		if names then
+			who ..= ` about <b>{names}</b>`
 		end
 		Components.paragraph(`{who}  ·  {Core.formatDate(ticket.date)}`, {
 			RichText = true,
@@ -232,7 +245,7 @@ return function(ctx: any, frame: Frame)
 			else "No webhook configured (Config > Nuntius)."
 		topLabel.Text = if state.openCount == 1 then "1 report to handle" else `{state.openCount} reports to handle`
 		Components.paragraph(
-			`Open a report to see both players, their chat and teleports, and to close it with a comment. {webhooks}`,
+			`Open a report to see the players involved, their chat and teleports, and to close it with a comment. {webhooks}`,
 			{ TextColor3 = C.textFaint, TextSize = Theme.sizes.small, LayoutOrder = 0, Parent = scroller }
 		)
 		if #state.tickets == 0 then
@@ -371,8 +384,8 @@ return function(ctx: any, frame: Frame)
 		local card = Components.card({ LayoutOrder = order, Parent = scroller }, { Components.stack("V", 8) })
 		Components.section("Teleport", 0).Parent = card
 		local people = { { role = "Reporter", person = detail.reporter } }
-		if detail.target then
-			table.insert(people, { role = "Reported", person = detail.target })
+		for _, target in detail.targets or { detail.target } do
+			table.insert(people, { role = "Reported", person = target })
 		end
 
 		local function move(person: any, direction: string, slot: number, message: string)
@@ -405,39 +418,54 @@ return function(ctx: any, frame: Frame)
 			end, 3, canMove and detail.staffPoint)
 		end
 
-		if detail.target then
+		local everyoneHere = true
+		for _, entry in people do
+			if not entry.person.online then
+				everyoneHere = false
+			end
+		end
+		if #people > 1 then
+			local two = #people == 2
 			local row = buttonRow(card, 10)
 			Components.text({
-				Text = "Both",
+				Text = if two then "Both" else `All {#people}`,
 				FontFace = P.medium,
 				TextSize = Theme.sizes.small + 1,
 				Size = UDim2.new(0, 170, 0, 28),
 				LayoutOrder = 0,
 				Parent = row,
 			})
-			local both = detail.reporter.online and detail.target.online and detail.reporter.canAct and detail.target.canAct
-			local function moveBoth(direction: string, message: string)
+			local all = everyoneHere
+			for _, entry in people do
+				if not entry.person.canAct then
+					all = false
+				end
+			end
+			local function moveAll(direction: string, message: string)
 				task.spawn(function()
-					local first = ctx.execute("teleport", { userId = detail.reporter.userId, direction = direction, slot = 1 })
-					local second = ctx.execute("teleport", { userId = detail.target.userId, direction = direction, slot = 2 })
-					if first and second then
+					local done = true
+					for i, entry in people do
+						local ok = ctx.execute("teleport", { userId = entry.person.userId, direction = direction, slot = i })
+						done = done and ok
+					end
+					if done then
 						ctx.notify(message, "success")
 					end
 				end)
 			end
-			smallButton(row, "Bring both", "secondary", function()
-				moveBoth("bring", "Both players brought to you.")
-			end, 1, both)
-			smallButton(row, "Both to point", "ghost", function()
-				moveBoth("point", "Both players sent to the staff point.")
-			end, 2, both and detail.staffPoint)
+			smallButton(row, if two then "Bring both" else "Bring all", "secondary", function()
+				moveAll("bring", if two then "Both players brought to you." else "All players brought to you.")
+			end, 1, all)
+			smallButton(row, if two then "Both to point" else "All to point", "ghost", function()
+				moveAll("point", if two then "Both players sent to the staff point." else "All players sent to the staff point.")
+			end, 2, all and detail.staffPoint)
 		end
 
 		local notes = {}
 		if not detail.staffPoint then
 			table.insert(notes, "No staff point: add a part named ImperiumStaffPoint in Workspace to send players there.")
 		end
-		if not detail.reporter.online or (detail.target and not detail.target.online) then
+		if not everyoneHere then
 			table.insert(notes, "Teleports only reach players on this server.")
 		end
 		if #notes > 0 then
@@ -466,7 +494,8 @@ return function(ctx: any, frame: Frame)
 			return
 		end
 		local events = if case.eventCount == 1 then "1 event" else `{case.eventCount} events`
-		local who = if ticket.kind == "bug" then "the reporter" else "both players"
+		local reportedCount = if ticket.targets then #ticket.targets else 1
+		local who = if ticket.kind == "bug" then "the reporter" elseif reportedCount == 1 then "both players" else `the reporter and the {reportedCount} reported players`
 		if (case.others or 0) > 0 then
 			who ..= ` and {case.others} player{if case.others == 1 then "" else "s"} around`
 		end
@@ -591,8 +620,9 @@ return function(ctx: any, frame: Frame)
 		caseCard(3, ticket)
 		teleportCard(4, ticket)
 
-		-- The two players side by side, or one under the other on a narrow window.
-		local wide = scroller.AbsoluteSize.X >= TWO_COLUMNS and detail.target ~= nil
+		-- Two players side by side, or one under the other on a narrow window or with more.
+		local targets = detail.targets or { detail.target }
+		local wide = scroller.AbsoluteSize.X >= TWO_COLUMNS and #targets == 1
 		local holder = create("Frame", {
 			BackgroundTransparency = 1,
 			Size = UDim2.new(1, 0, 0, 0),
@@ -606,8 +636,17 @@ return function(ctx: any, frame: Frame)
 		local chat = ticket.chat
 		local pendingChat = ticket.kind == "player" and chat == nil
 		personColumn(holder, 1, "Reporter", detail.reporter, if chat then chat.reporter else nil, width)
-		if detail.target then
-			personColumn(holder, 2, "Reported player", detail.target, if chat then chat.target else nil, width)
+		for i, target in targets do
+			local lines = nil
+			if chat then
+				lines = if i == 1 then chat.target else nil
+				for _, entry in chat.targets or {} do
+					if entry.userId == target.userId then
+						lines = entry.lines
+					end
+				end
+			end
+			personColumn(holder, 1 + i, "Reported player", target, lines, width)
 		end
 		if pendingChat then
 			Components.paragraph("The chat is still going through the Roblox filter: it appears in a few seconds.", {

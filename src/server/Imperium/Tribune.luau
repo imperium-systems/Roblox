@@ -1,7 +1,8 @@
 --!strict
 -- Tribune: reports and support.
--- Lets a player report another player or a bug, attaches the context automatically
--- (server, positions, Lictor score, past warnings, the recent chat of both players) and
+-- Lets a player report one or several players (up to MAX_TARGETS) or a bug, attaches the
+-- context automatically (server, positions, Lictor score, past warnings, the recent chat
+-- of everyone involved) and
 -- follows the ticket until staff close it, with a short comment. The reporter is told
 -- when their ticket is handled, even on a later visit.
 -- Bug reports, player reports and closed tickets also leave through Nuntius (webhooks).
@@ -29,6 +30,7 @@ local OPEN_CHANNEL = "tribune.open"
 local MAX_TICKETS = 200 -- kept across all servers; the oldest closed ones go first
 local MAX_LENGTH = 300
 local COMMAND = "/report"
+local MAX_TARGETS = 5 -- players in one report
 local MAX_COMMENT = 300
 local CHAT_KEEP = 10 -- messages kept per player
 local CHAT_WINDOW = 300 -- seconds of chat attached to a report
@@ -62,8 +64,10 @@ export type Ticket = {
 	description: string,
 	reporterId: number,
 	reporterName: string,
+	-- First reported player, kept for the Log and older tickets; targets lists them all.
 	targetId: number?,
 	targetName: string?,
+	targets: { Target }?,
 	context: { { string } }, -- { label, value } pairs, already formatted
 	status: Status,
 	date: number,
@@ -75,10 +79,13 @@ export type Ticket = {
 	notified: boolean?, -- the reporter has been told about the outcome
 	comment: string?, -- written by staff when closing, filtered
 	-- Chat written shortly before the report, filtered. Missing while being filtered.
-	chat: { reporter: { ChatLine }, target: { ChatLine }? }?,
+	-- target is the chat of the first reported player, targets the chat of each of them.
+	chat: { reporter: { ChatLine }, target: { ChatLine }?, targets: { TargetChat }? }?,
 }
 
+export type Target = { userId: number, name: string }
 export type ChatLine = { date: number, text: string }
+export type TargetChat = { userId: number, lines: { ChatLine } }
 
 type Book = { next: number, tickets: { Ticket } }
 
@@ -117,6 +124,26 @@ local function filterText(text: string, authorId: number, context: Enum.TextFilt
 		return nil
 	end
 	return result
+end
+
+-- The reported players of a ticket (older tickets only have targetId).
+function Tribune.targetsOf(ticket: Ticket): { Target }
+	if ticket.targets then
+		return ticket.targets
+	end
+	if ticket.targetId then
+		return { { userId = ticket.targetId, name = ticket.targetName or tostring(ticket.targetId) } }
+	end
+	return {}
+end
+
+-- "Name1, Name2" for the reported players, or nil for a bug report.
+function Tribune.targetNames(ticket: Ticket): string?
+	local names = {}
+	for _, target in Tribune.targetsOf(ticket) do
+		table.insert(names, target.name)
+	end
+	return if #names > 0 then table.concat(names, ", ") else nil
 end
 
 local function readBook(): Book?
@@ -161,7 +188,7 @@ local function formatPosition(p: Vector3): string
 end
 
 -- What staff need to judge the report without asking the reporter.
-local function gatherContext(reporter: Player, target: Player?): { { string } }
+local function gatherContext(reporter: Player, targets: { Player }): { { string } }
 	local server = Praefectus.state()
 	local context: { { string } } = {
 		{ "Server", `{string.sub(server.jobId, 1, 8)} · version {server.version}` },
@@ -173,18 +200,29 @@ local function gatherContext(reporter: Player, target: Player?): { { string } }
 	if reporterPosition then
 		table.insert(context, { "Reporter position", formatPosition(reporterPosition) })
 	end
-	if target then
+	for _, target in targets do
+		-- One target keeps the short labels; several are told apart by name.
+		local prefix = if #targets == 1 then "Target" else target.Name
 		local targetPosition = position(target)
 		if targetPosition then
-			table.insert(context, { "Target position", formatPosition(targetPosition) })
+			table.insert(context, { `{prefix} position`, formatPosition(targetPosition) })
 			if reporterPosition then
-				table.insert(context, { "Distance", `{math.round((targetPosition - reporterPosition).Magnitude)} studs` })
+				table.insert(context, {
+					if #targets == 1 then "Distance" else `{prefix} distance`,
+					`{math.round((targetPosition - reporterPosition).Magnitude)} studs`,
+				})
 			end
 		end
-		table.insert(context, { "Target account", `{target.AccountAge} days old` })
-		table.insert(context, { "Lictor score", tostring(Lictor.scoreOf(target)) })
+		table.insert(context, { `{prefix} account`, `{target.AccountAge} days old` })
+		table.insert(context, {
+			if #targets == 1 then "Lictor score" else `{prefix} Lictor score`,
+			tostring(Lictor.scoreOf(target)),
+		})
 		local state = Praetor.state(target.UserId)
-		table.insert(context, { "Past warnings", tostring(if state then state.warnings else 0) })
+		table.insert(context, {
+			if #targets == 1 then "Past warnings" else `{prefix} warnings`,
+			tostring(if state then state.warnings else 0),
+		})
 	end
 	return context
 end
@@ -195,7 +233,8 @@ local function tellReporter(ticket: Ticket): boolean
 	if not reporter then
 		return false
 	end
-	local about = if ticket.targetName then `your report about {ticket.targetName}` else "your bug report"
+	local names = Tribune.targetNames(ticket)
+	local about = if names then `your report about {names}` else "your bug report"
 	Praeco.notify(reporter, {
 		kind = "success",
 		title = "REPORT",
@@ -255,12 +294,29 @@ local function contextFields(ticket: Ticket): { any }
 	return fields
 end
 
+local function reportedField(ticket: Ticket): { [string]: any }?
+	local targets = Tribune.targetsOf(ticket)
+	if #targets == 0 then
+		return nil
+	end
+	local lines = {}
+	for _, target in targets do
+		table.insert(lines, `{target.name} ({target.userId})`)
+	end
+	return {
+		name = if #targets == 1 then "Reported player" else "Reported players",
+		value = table.concat(lines, "\n"),
+		inline = true,
+	}
+end
+
 local function announceTicket(ticket: Ticket)
 	local fields = {
 		{ name = "Reporter", value = `{ticket.reporterName} ({ticket.reporterId})`, inline = true },
 	}
-	if ticket.targetName then
-		table.insert(fields, { name = "Reported player", value = `{ticket.targetName} ({ticket.targetId})`, inline = true })
+	local reported = reportedField(ticket)
+	if reported then
+		table.insert(fields, reported)
 	end
 	for _, field in contextFields(ticket) do
 		table.insert(fields, field)
@@ -280,8 +336,9 @@ local function announceClosing(ticket: Ticket)
 		{ name = "Closed by", value = ticket.closedBy or "-", inline = true },
 		{ name = "Reporter", value = ticket.reporterName, inline = true },
 	}
-	if ticket.targetName then
-		table.insert(fields, { name = "Reported player", value = `{ticket.targetName} ({ticket.targetId})`, inline = true })
+	local reported = reportedField(ticket)
+	if reported then
+		table.insert(fields, reported)
 	end
 	table.insert(fields, { name = "Report", value = ticket.description })
 	table.insert(fields, { name = "Staff comment", value = ticket.comment or "No comment." })
@@ -324,7 +381,7 @@ local function publicView(ticket: Ticket): { [string]: any }
 		id = ticket.id,
 		kind = ticket.kind,
 		categoryLabel = ticket.categoryLabel,
-		targetName = ticket.targetName,
+		targetName = Tribune.targetNames(ticket),
 		description = ticket.description,
 		status = ticket.status,
 		outcome = ticket.outcome,
@@ -351,18 +408,36 @@ function Tribune.submit(reporter: Player, data: { [string]: any }): { [string]: 
 		return failure("too_short")
 	end
 
-	local target: Player? = nil
+	-- One or several players: userIds (a list), or userId for a single one.
+	local targets: { Player } = {}
 	if kind == "player" then
-		if not Core.isUserId(data.userId) then
+		local ids = if type(data.userIds) == "table" then data.userIds else { data.userId }
+		if #ids == 0 then
 			return failure("player_not_found")
 		end
-		if data.userId == reporter.UserId then
-			return failure("self_report")
+		if #ids > MAX_TARGETS then
+			return failure("too_many_targets")
 		end
-		target = Players:GetPlayerByUserId(data.userId)
-		if not target then
-			return failure("offline")
+		for _, userId in ids do
+			if not Core.isUserId(userId) then
+				return failure("player_not_found")
+			end
+			if userId == reporter.UserId then
+				return failure("self_report")
+			end
+			local target = Players:GetPlayerByUserId(userId)
+			if not target then
+				return failure("offline")
+			end
+			if not table.find(targets, target) then
+				table.insert(targets, target)
+			end
 		end
+	end
+	local target: Player? = targets[1]
+	local targetList: { Target } = {}
+	for _, player in targets do
+		table.insert(targetList, { userId = player.UserId, name = player.Name })
 	end
 
 	local wait = cooldownLeft(reporter)
@@ -377,11 +452,13 @@ function Tribune.submit(reporter: Player, data: { [string]: any }): { [string]: 
 	-- Counted before the save: a failed save must not let someone spam retries.
 	lastReport[reporter] = os.clock()
 
-	local context = gatherContext(reporter, target)
-	-- Taken now: the target may leave before the filter has finished.
+	local context = gatherContext(reporter, targets)
+	-- Taken now: the targets may leave before the filter has finished.
 	local reporterChat = if target then recentChat(reporter) else {}
-	local targetChat = recentChat(target)
-	local targetId = target and target.UserId
+	local targetChats = {}
+	for _, player in targets do
+		table.insert(targetChats, { userId = player.UserId, lines = recentChat(player) })
+	end
 	local maxOpen = Lex.get("tribune.max_open")
 	local refusal: string? = nil
 	local created: Ticket? = nil
@@ -393,9 +470,14 @@ function Tribune.submit(reporter: Player, data: { [string]: any }): { [string]: 
 		for _, ticket in book.tickets do
 			if ticket.reporterId == reporter.UserId and ticket.status ~= "closed" then
 				open += 1
-				if target and ticket.targetId == target.UserId then
-					refusal = "already_reported"
-					return nil
+				-- One open report per reported player.
+				for _, reported in Tribune.targetsOf(ticket) do
+					for _, wanted in targetList do
+						if wanted.userId == reported.userId then
+							refusal = "already_reported"
+							return nil
+						end
+					end
 				end
 			end
 		end
@@ -414,6 +496,7 @@ function Tribune.submit(reporter: Player, data: { [string]: any }): { [string]: 
 			reporterName = reporter.Name,
 			targetId = target and target.UserId,
 			targetName = target and target.Name,
+			targets = if #targetList > 0 then targetList else nil,
 			context = context,
 			status = "open",
 			date = now,
@@ -452,9 +535,14 @@ function Tribune.submit(reporter: Player, data: { [string]: any }): { [string]: 
 	announceTicket(ticket)
 	if target then
 		task.spawn(function()
+			local filtered: { TargetChat } = {}
+			for _, entry in targetChats do
+				table.insert(filtered, { userId = entry.userId, lines = filterChat(entry.lines, entry.userId) })
+			end
 			local chat = {
 				reporter = filterChat(reporterChat, reporter.UserId),
-				target = filterChat(targetChat, targetId :: number),
+				target = filtered[1] and filtered[1].lines,
+				targets = filtered,
 			}
 			editTicket(ticket.id, function(t)
 				t.chat = chat
@@ -733,6 +821,7 @@ function Tribune.start()
 				enabled = Lex.get("tribune.enabled"),
 				button = Lex.get("tribune.show_button"),
 				maxLength = MAX_LENGTH,
+				maxTargets = MAX_TARGETS,
 				categories = { player = categoriesFor("player"), bug = categoriesFor("bug") },
 				wait = cooldownLeft(player),
 			}

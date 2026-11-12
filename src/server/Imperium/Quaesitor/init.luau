@@ -765,7 +765,7 @@ function Quaesitor.init(deps)
 end
 
 function Quaesitor.start()
-	-- Player reports: one case for the reporter and the reported player.
+	-- Player reports: one case for the reporter and the reported players.
 	-- Bug reports: one case for the reporter, to see where and how the bug happened.
 	Signum.on("tribune.ticket", function(ticket: any, created: boolean?)
 		if created ~= true then
@@ -773,10 +773,12 @@ function Quaesitor.start()
 		end
 		local reporter = { userId = ticket.reporterId, name = ticket.reporterName, role = "reporter" }
 		if ticket.kind == "player" and ticket.targetId then
-			createCase("report", ticket.id, `Report #{ticket.id} · {ticket.categoryLabel}`, {
-				reporter,
-				{ userId = ticket.targetId, name = ticket.targetName, role = "reported" },
-			})
+			-- Every reported player (older tickets only have targetId).
+			local involved = { reporter }
+			for _, target in ticket.targets or { { userId = ticket.targetId, name = ticket.targetName } } do
+				table.insert(involved, { userId = target.userId, name = target.name, role = "reported" })
+			end
+			createCase("report", ticket.id, `Report #{ticket.id} · {ticket.categoryLabel}`, involved)
 		elseif ticket.kind == "bug" then
 			createCase("report", ticket.id, `Bug #{ticket.id} · {ticket.categoryLabel}`, { reporter })
 		end

@@ -26,9 +26,10 @@ local MESSAGES: { [string]: string } = {
 	disabled = "Reports are turned off in this game.",
 	too_short = "Please describe what happened (10 characters minimum).",
 	self_report = "You cannot report yourself.",
-	offline = "This player has left the server.",
-	player_not_found = "Choose a player first.",
-	already_reported = "You already have an open report about this player.",
+	offline = "One of these players has left the server.",
+	player_not_found = "Choose at least one player first.",
+	already_reported = "You already have an open report about one of these players.",
+	too_many_targets = "Too many players in one report.",
 	too_many_open = "You already have several reports waiting. Staff will look at them soon.",
 	invalid_text = "The description is empty or too long.",
 	invalid_value = "Choose a category first.",
@@ -216,10 +217,11 @@ local function build()
 
 	local kind = "player"
 	local category: string? = nil
-	local targetId: number? = nil
+	local targets: { number } = {} -- UserIds of the chosen players
+	local maxTargets = settings.maxTargets or 1
 	local sending = false
 
-	local playerSection = Components.section("Player", 3)
+	local playerSection = Components.section(if maxTargets > 1 then `Players (up to {maxTargets})` else "Player", 3)
 	playerSection.Parent = formPage
 	local search = Components.field("Search a player…", { LayoutOrder = 4, Parent = formPage })
 	local playerList = Components.scroller({
@@ -289,7 +291,7 @@ local function build()
 		local ready = not sending
 			and category ~= nil
 			and length >= MIN_LENGTH
-			and (kind == "bug" or targetId ~= nil)
+			and (kind == "bug" or #targets > 0)
 		Components.setEnabled(submit, ready)
 	end
 
@@ -312,7 +314,7 @@ local function build()
 				continue
 			end
 			shown += 1
-			local selected = player.UserId == targetId
+			local selected = table.find(targets, player.UserId) ~= nil
 			local row = create("TextButton", {
 				Text = "",
 				AutoButtonColor = false,
@@ -345,8 +347,19 @@ local function build()
 				Size = UDim2.new(0.5, -8, 1, 0),
 				Parent = row,
 			})
+			-- A click adds or removes the player; one player only when the limit is 1.
 			row.Activated:Connect(function()
-				targetId = player.UserId
+				local index = table.find(targets, player.UserId)
+				if index then
+					table.remove(targets, index)
+				elseif maxTargets <= 1 then
+					targets = { player.UserId }
+				elseif #targets >= maxTargets then
+					say(`You can report up to {maxTargets} players at once.`, C.danger)
+					return
+				else
+					table.insert(targets, player.UserId)
+				end
 				drawPlayers()
 				refreshSubmit()
 			end)
@@ -399,14 +412,14 @@ local function build()
 			local response = request("submit", {
 				kind = kind,
 				category = category,
-				userId = if kind == "player" then targetId else nil,
+				userIds = if kind == "player" then targets else nil,
 				description = description.Text,
 			})
 			sending = false
 			if response.ok then
 				say(`Report #{response.id} sent. You can follow it in My reports.`, C.success)
 				description.Text = ""
-				targetId = nil
+				table.clear(targets)
 				drawPlayers()
 				drawCategories()
 			elseif response.err == "cooldown" then
@@ -433,8 +446,9 @@ local function build()
 		end
 	end)
 	Players.PlayerRemoving:Connect(function(player)
-		if player.UserId == targetId then
-			targetId = nil
+		local index = table.find(targets, player.UserId)
+		if index then
+			table.remove(targets, index)
 		end
 		task.defer(function()
 			if window.Visible then
@@ -541,7 +555,7 @@ local function build()
 			kindSelector.LayoutOrder = 2
 			kindSelector.Parent = formPage
 			setKind("player")
-			targetId = userId
+			targets = { userId }
 		end
 		if not settings.enabled then
 			say(MESSAGES.disabled, C.danger)

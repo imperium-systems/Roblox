@@ -372,8 +372,16 @@ actions["praetor.unban"] = {
 --   to     the staff member goes to the player
 --   bring  the player comes to the staff member
 --   point  the player goes to the staff point (Lex consul.staff_point)
--- slot 1 or 2 shifts the arrival sideways, so two players sent together do not overlap.
-local SLOTS = { [0] = CFrame.new(0, 0, 4), [1] = CFrame.new(4, 0, 4), [2] = CFrame.new(-4, 0, 4) }
+-- slot 1 to 6 shifts the arrival sideways, so players sent together do not overlap.
+local SLOTS = {
+	[0] = CFrame.new(0, 0, 4),
+	[1] = CFrame.new(4, 0, 4),
+	[2] = CFrame.new(-4, 0, 4),
+	[3] = CFrame.new(8, 0, 2),
+	[4] = CFrame.new(-8, 0, 2),
+	[5] = CFrame.new(0, 0, 8),
+	[6] = CFrame.new(0, 0, -4),
+}
 local MOVES = { to = "teleport to", bring = "teleport bring", point = "teleport to staff point" }
 
 actions["teleport"] = {
@@ -409,7 +417,7 @@ actions["teleport"] = {
 			end
 			destination = other:GetPivot()
 		end
-		local slot = if d.slot == 1 or d.slot == 2 then d.slot else 0
+		local slot = if type(d.slot) == "number" and SLOTS[d.slot] then d.slot else 0
 		-- A staff teleport is legitimate: Lictor must not flag it.
 		Lictor.exempt(mover, 2)
 		model:PivotTo(destination * SLOTS[slot])
@@ -649,10 +657,15 @@ actions["tribune.detail"] = {
 			return failure("ticket_not_found")
 		end
 		local log = Censor.getLog(200)
+		local targets = {}
+		for _, target in Tribune.targetsOf(ticket) do
+			table.insert(targets, personOf(actor, target.userId, target.name, log))
+		end
 		return success({
 			ticket = ticket,
 			reporter = personOf(actor, ticket.reporterId, ticket.reporterName, log),
-			target = if ticket.targetId then personOf(actor, ticket.targetId, ticket.targetName, log) else nil,
+			targets = targets,
+			target = targets[1],
 			maxComment = Tribune.MAX_COMMENT,
 			staffPoint = staffPoint() ~= nil,
 			case = if Senatus.can(actor, "quaesitor.view") then Quaesitor.caseOfTicket(ticket.id) else nil,
@@ -665,8 +678,14 @@ local function ticketResult(actor: Player, action: string, ok: boolean, code: st
 	if not ok or not ticket then
 		return failure(code or "internal_error")
 	end
+	-- The Log links to the first reported player; the others are named in the details.
 	local target = if ticket.targetId then { name = ticket.targetName, userId = ticket.targetId } else nil
-	Censor.logAction(actor, action, target, `#{ticket.id} {ticket.categoryLabel}`)
+	local details = `#{ticket.id} {ticket.categoryLabel}`
+	local targets = Tribune.targetsOf(ticket)
+	if #targets > 1 then
+		details ..= ` · {Tribune.targetNames(ticket)}`
+	end
+	Censor.logAction(actor, action, target, details)
 	return success()
 end
 
@@ -921,7 +940,8 @@ function Consul.start()
 		if not created then
 			return
 		end
-		local about = if ticket.targetName then ` · {ticket.targetName}` else ""
+		local names = Tribune.targetNames(ticket)
+		local about = if names then ` · {names}` else ""
 		for _, player in staffWith("tribune.handle") do
 			if player.UserId ~= ticket.reporterId then
 				Praeco.notify(player, {
