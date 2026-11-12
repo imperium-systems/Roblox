@@ -2,8 +2,9 @@
 -- Quaesitor: investigations.
 -- Keeps a rolling record of the last minutes on the server: the position and state of
 -- each character (once per second), Lictor detections, deaths and staff actions.
--- When a player report is sent (Tribune) or a Lictor alert fires, freezes that record into
--- a case file for the players involved and stores it with Tabularius.
+-- When a report is sent (Tribune, player or bug) or a Lictor alert fires, keeps recording a
+-- few more seconds, then freezes the minutes before and the seconds after into a case file
+-- for the players involved and stores it with Tabularius.
 -- Staff replay a case from the panel (Consul): ghosts move on the viewer's screen only.
 -- Case files are deleted after the number of days set in Lex.
 --
@@ -38,7 +39,7 @@ type Frame = { t: number, players: { [number]: Sample } }
 
 export type Event = {
 	t: number,
-	kind: string, -- "lictor" | "death" | "staff" | "left"
+	kind: string, -- "trigger" | "lictor" | "death" | "staff" | "left"
 	userIds: { number }?, -- only in memory: who the event is about
 	userId: number?, -- in a case: the involved player it is about
 	text: string,
@@ -55,6 +56,7 @@ export type Summary = {
 	date: number, -- when the case was created
 	startedAt: number, -- wall time of the first sample
 	duration: number,
+	triggerAt: number?, -- seconds from the start of the case to the report or alert
 	eventCount: number,
 	expiresAt: number?, -- computed when listed, never stored
 }
@@ -75,6 +77,10 @@ local Lex: any
 local frames: { Frame } = {}
 local events: { Event } = {}
 local lastLictorCase: { [number]: number } = {}
+
+-- Cases waiting for the seconds after their trigger; saved at once if the server closes.
+type Pending = { finish: () -> () }
+local pending: { Pending } = {}
 
 local function round1(n: number): number
 	return math.round(n * 10) / 10
@@ -113,7 +119,8 @@ local function sampleOf(player: Player, now: number): Sample?
 end
 
 local function trim(now: number)
-	local from = now - Lex.get("quaesitor.window")
+	-- A pending case still needs its window before the trigger.
+	local from = now - Lex.get("quaesitor.window") - Lex.get("quaesitor.after")
 	while frames[1] and frames[1].t < from do
 		table.remove(frames, 1)
 	end
@@ -167,18 +174,26 @@ end
 
 -- Case files ---------------------------------------------------------------------------
 
--- Copies the record of the involved players, with times relative to its start.
-local function freeze(involved: { Person }): ({ Track }, { Event }, number, number)
+-- Copies the record of the involved players from the window before the trigger until now,
+-- with times relative to its start.
+local function freeze(involved: { Person }, trigger: number, label: string): ({ Track }, { Event }, number, number, number)
 	recordFrame()
 	local now = os.clock()
-	local start = if frames[1] then frames[1].t else now
+	local from = trigger - Lex.get("quaesitor.window")
+	local start = now
+	for _, frame in frames do
+		if frame.t >= from then
+			start = frame.t
+			break
+		end
+	end
 
 	local tracks: { Track } = {}
 	for _, person in involved do
 		local samples = {}
 		for _, frame in frames do
 			local sample = frame.players[person.userId]
-			if sample then
+			if sample and frame.t >= start then
 				local copy = table.clone(sample)
 				copy[1] = round1(sample[1] - start)
 				table.insert(samples, copy)
@@ -192,8 +207,17 @@ local function freeze(involved: { Person }): ({ Track }, { Event }, number, numb
 		})
 	end
 
+	local triggerAt = round1(math.max(trigger - start, 0))
 	local caseEvents: { Event } = {}
+	local triggerAdded = false
 	for _, event in events do
+		if event.t < start then
+			continue
+		end
+		if not triggerAdded and event.t > trigger then
+			table.insert(caseEvents, { t = triggerAt, kind = "trigger", text = label })
+			triggerAdded = true
+		end
 		for _, person in involved do
 			if table.find(event.userIds or {}, person.userId) then
 				table.insert(caseEvents, {
@@ -207,7 +231,11 @@ local function freeze(involved: { Person }): ({ Track }, { Event }, number, numb
 		end
 	end
 
-	return tracks, caseEvents, os.time() - math.round(now - start), round1(now - start)
+	if not triggerAdded then
+		table.insert(caseEvents, { t = triggerAt, kind = "trigger", text = label })
+	end
+
+	return tracks, caseEvents, os.time() - math.round(now - start), round1(now - start), triggerAt
 end
 
 local function removeFromIndex(ids: { number })
@@ -270,18 +298,37 @@ local function createCase(source: string, ticketId: number?, label: string, invo
 	if not Lex.get("quaesitor.enabled") then
 		return
 	end
-	local tracks, caseEvents, startedAt, duration = freeze(involved)
-	local base = {
-		source = source,
-		ticketId = ticketId,
-		label = label,
-		players = involved,
-		date = os.time(),
-		startedAt = startedAt,
-		duration = duration,
-		eventCount = #caseEvents,
-	}
-	task.spawn(save, base, tracks, caseEvents)
+	local trigger = os.clock()
+	local date = os.time()
+	local entry: Pending
+	local done = false
+	local function finish()
+		if done then
+			return
+		end
+		done = true
+		local i = table.find(pending, entry)
+		if i then
+			table.remove(pending, i)
+		end
+		local tracks, caseEvents, startedAt, duration, triggerAt = freeze(involved, trigger, label)
+		local base = {
+			source = source,
+			ticketId = ticketId,
+			label = label,
+			players = involved,
+			date = date,
+			startedAt = startedAt,
+			duration = duration,
+			triggerAt = triggerAt,
+			eventCount = #caseEvents - 1, -- the trigger itself is not counted
+		}
+		save(base, tracks, caseEvents)
+	end
+	entry = { finish = finish }
+	table.insert(pending, entry)
+	-- Keep recording what follows the trigger before freezing the case.
+	task.delay(Lex.get("quaesitor.after"), finish)
 end
 
 -- Deletes the cases older than the Lex delay.
@@ -386,14 +433,21 @@ function Quaesitor.init(deps)
 	Lex.define("quaesitor.enabled", {
 		default = true,
 		type = "boolean",
-		description = "Records the last minutes and creates case files on player reports and Lictor alerts.",
+		description = "Records the last minutes and creates case files on reports and Lictor alerts.",
 	})
 	Lex.define("quaesitor.window", {
 		default = 180,
 		type = "number",
-		description = "Seconds of recording kept in a case file.",
+		description = "Seconds recorded before the report or alert in a case file.",
 		min = 30,
 		max = 600,
+	})
+	Lex.define("quaesitor.after", {
+		default = 30,
+		type = "number",
+		description = "Seconds still recorded after the report or alert before the case file is saved.",
+		min = 0,
+		max = 120,
 	})
 	Lex.define("quaesitor.retention_days", {
 		default = 14,
@@ -406,14 +460,20 @@ end
 
 function Quaesitor.start()
 	-- Player reports: one case for the reporter and the reported player.
+	-- Bug reports: one case for the reporter, to see where and how the bug happened.
 	Signum.on("tribune.ticket", function(ticket: any, created: boolean?)
-		if created ~= true or ticket.kind ~= "player" or not ticket.targetId then
+		if created ~= true then
 			return
 		end
-		createCase("report", ticket.id, `Report #{ticket.id} · {ticket.categoryLabel}`, {
-			{ userId = ticket.reporterId, name = ticket.reporterName, role = "reporter" },
-			{ userId = ticket.targetId, name = ticket.targetName, role = "reported" },
-		})
+		local reporter = { userId = ticket.reporterId, name = ticket.reporterName, role = "reporter" }
+		if ticket.kind == "player" and ticket.targetId then
+			createCase("report", ticket.id, `Report #{ticket.id} · {ticket.categoryLabel}`, {
+				reporter,
+				{ userId = ticket.targetId, name = ticket.targetName, role = "reported" },
+			})
+		elseif ticket.kind == "bug" then
+			createCase("report", ticket.id, `Bug #{ticket.id} · {ticket.categoryLabel}`, { reporter })
+		end
 	end)
 
 	-- Lictor emits each detection before the alert: the case includes it.
@@ -466,6 +526,16 @@ function Quaesitor.start()
 			elseif #frames > 0 then
 				table.clear(frames)
 				table.clear(events)
+			end
+		end
+	end)
+
+	-- Closing server: save the pending cases with what was recorded so far.
+	game:BindToClose(function()
+		for _, entry in table.clone(pending) do
+			local ok, err = pcall(entry.finish)
+			if not ok then
+				logger.err("could not save a pending case:", err)
 			end
 		end
 	end)

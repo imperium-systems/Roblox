@@ -42,6 +42,7 @@ local EVENT_COLORS: { [string]: Color3 } = {
 	death = C.warning,
 	staff = C.accent,
 	left = C.textFaint,
+	trigger = C.info,
 }
 
 type Ghost = {
@@ -408,7 +409,8 @@ function Replay.start(screen: ScreenGui, case: any, onStop: () -> ())
 			BorderSizePixel = 0,
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			Position = UDim2.new(math.clamp(event.t / duration, 0, 1), 0, 0.5, 0),
-			Size = UDim2.fromOffset(3, 18),
+			-- The report or alert stands out from the other events.
+			Size = if event.kind == "trigger" then UDim2.fromOffset(5, 24) else UDim2.fromOffset(3, 18),
 			ZIndex = 33,
 			Parent = timeline,
 		})

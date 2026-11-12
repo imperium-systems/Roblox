@@ -450,9 +450,9 @@ return function(ctx: any, frame: Frame)
 		end
 	end
 
-	-- Quaesitor case file of a player report: the last minutes of both players.
+	-- Quaesitor case file of a report: the minutes around it, for the players involved.
 	local function caseCard(order: number, ticket: any)
-		if ticket.kind ~= "player" or not ctx.can("quaesitor.view") then
+		if not ctx.can("quaesitor.view") then
 			return
 		end
 		local card = Components.card({ LayoutOrder = order, Parent = scroller }, { Components.stack("V", 8) })
@@ -460,14 +460,17 @@ return function(ctx: any, frame: Frame)
 		local case = detail.case
 		if not case then
 			Components.paragraph(
-				"No case file for this report: recording was off, or it is still being saved.",
+				"No case file yet: it is saved a few seconds after the report (quaesitor.after in Settings), unless recording was off.",
 				{ TextSize = Theme.sizes.small + 1, TextColor3 = C.textFaint, LayoutOrder = 1, Parent = card }
 			)
 			return
 		end
 		local events = if case.eventCount == 1 then "1 event" else `{case.eventCount} events`
+		local who = if ticket.kind == "bug" then "the reporter" else "both players"
+		local before = math.floor(case.triggerAt or case.duration)
+		local after = math.floor(case.duration - before)
 		Components.paragraph(
-			`Case #{case.id}: positions of both players over the {math.floor(case.duration)} s before the report, {events}. Deleted on {Core.formatDate(case.expiresAt)}.`,
+			`Case #{case.id}: positions of {who} from {before} s before the report to {after} s after it, {events}. Deleted on {Core.formatDate(case.expiresAt)}.`,
 			{ TextSize = Theme.sizes.small + 1, TextColor3 = C.textMuted, LayoutOrder = 1, Parent = card }
 		)
 		local row = buttonRow(card, 2)

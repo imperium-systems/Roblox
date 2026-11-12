@@ -1,5 +1,5 @@
 --!strict
--- Quaesitor page: case files created by player reports and Lictor alerts.
+-- Quaesitor page: case files created by reports (player or bug) and Lictor alerts.
 -- Opening a case shows who is in it and what happened; Replay plays the positions as
 -- ghosts in the world, on this screen only.
 -- Other pages open a case with ctx.open("Quaesitor", id) or { id = id, replay = true }.
@@ -30,6 +30,7 @@ local KINDS: { [string]: { label: string, color: Color3 } } = {
 	death = { label = "Death", color = C.warning },
 	staff = { label = "Staff", color = C.accent },
 	left = { label = "Left", color = C.textFaint },
+	trigger = { label = "Trigger", color = C.info },
 }
 
 local function minutes(seconds: number): string
@@ -213,7 +214,7 @@ return function(ctx: any, frame: Frame)
 	local function drawList()
 		local count = #state.cases
 		topLabel.Text = if count == 1 then "1 case file" else `{count} case files`
-		local intro = `A case keeps the last {state.window} s of positions, Lictor detections, deaths and staff actions of the players involved. It is created by a player report or a Lictor alert, and deleted after {state.retention} days.`
+		local intro = `A case keeps the positions, Lictor detections, deaths and staff actions of the players involved, from {state.window} s before a report (player or bug) or a Lictor alert until {state.after} s after it. It is saved once those seconds have passed, and deleted after {state.retention} days.`
 		if not state.enabled then
 			intro ..= " Recording is off (quaesitor.enabled in Settings)."
 		end

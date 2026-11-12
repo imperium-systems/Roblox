@@ -56,7 +56,7 @@ local SECTIONS = {
 		title = "Case files",
 		path = "Curia > Quaesitor",
 		permission = "quaesitor.view",
-		summary = "The server keeps the last minutes of every character's position, Lictor detections, deaths and staff actions. A player report or a Lictor alert freezes them into a case file for the players involved, linked from the report and the Anticheat page. Case files are deleted after the number of days in Settings (quaesitor.retention_days).",
+		summary = "The server keeps the last minutes of every character's position, Lictor detections, deaths and staff actions. A report (player or bug) or a Lictor alert freezes them into a case file for the players involved, with the minutes before and a few seconds after (quaesitor.after), linked from the report and the Anticheat page. Case files are deleted after the number of days in Settings (quaesitor.retention_days).",
 		commands = {
 			{ "quaesitor.view", "Replay", "Hides the panel and plays the case: the players appear as ghosts in the world, on your screen only. Pause, scrub the timeline, change the speed and follow any of them with the camera." },
 		},

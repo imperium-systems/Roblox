@@ -733,6 +733,7 @@ actions["quaesitor.list"] = {
 			cases = cases,
 			enabled = Lex.get("quaesitor.enabled"),
 			window = Lex.get("quaesitor.window"),
+			after = Lex.get("quaesitor.after"),
 			retention = Lex.get("quaesitor.retention_days"),
 		})
 	end,
