@@ -1,7 +1,7 @@
 --!strict
 -- Quaesitor appearance: what a character looks like, saved with a case, and the avatar
 -- models rebuilt from it for a replay.
---   look      avatar of the player when the case was frozen (body, clothes, accessories)
+--   look      last known avatar of the player (body, clothes, accessories), kept after they leave
 --   items     accessories and tools seen during the recording, by name. Those that are not
 --             part of the avatar (a vest, a weapon given by the game) are copied from the
 --             player if they are still on the server, else from a model of the same name in
@@ -136,14 +136,15 @@ local function avatarOf(track: any): Model?
 	if look and look.description then
 		description = descriptionFrom(look.description)
 	elseif track.userId > 0 then
-		-- No saved look (the player had no character): their avatar of today.
+		-- No saved look: their avatar of today.
 		local ok, current = pcall(Players.GetHumanoidDescriptionFromUserId, Players, track.userId)
 		if ok then
 			description = current
 		end
 	end
 	if not description then
-		return nil
+		-- Nothing known (Studio test players have no Roblox avatar): a plain one.
+		description = Instance.new("HumanoidDescription")
 	end
 	local ok, model = pcall(
 		Players.CreateHumanoidModelFromDescription,

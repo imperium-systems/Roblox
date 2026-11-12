@@ -100,6 +100,8 @@ local Lex: any
 local frames: { Frame } = {}
 local events: { Event } = {}
 local names: { [number]: string } = {}
+-- Last known avatar of each player, kept a while after they leave.
+local looks: { [number]: Appearance.Look } = {}
 local lastLictorCase: { [number]: number } = {}
 
 -- Cases waiting for the seconds after their trigger; saved at once if the server closes.
@@ -180,6 +182,14 @@ local function addEvent(kind: string, userIds: { number }, text: string)
 		return
 	end
 	table.insert(events, { t = os.clock(), kind = kind, userIds = userIds, text = text })
+end
+
+-- Keeps the avatar of a player; a failed read keeps the previous one.
+local function rememberLook(player: Player)
+	local ok, look = pcall(Appearance.lookOf, player)
+	if ok and look and (look.description or not looks[player.UserId]) then
+		looks[player.UserId] = look
+	end
 end
 
 local function watchDeaths(player: Player)
@@ -316,8 +326,10 @@ local function trackOf(person: Person, inRange: { Frame }, start: number): Track
 	end
 	local player = Players:GetPlayerByUserId(person.userId)
 	if player then
-		track.look = Appearance.lookOf(player)
+		rememberLook(player)
 	end
+	-- Kept after a player leaves: their avatar stays right in the replay.
+	track.look = looks[person.userId]
 	return track
 end
 
@@ -800,11 +812,28 @@ function Quaesitor.start()
 		addEvent("staff", { entry.actorId, entry.targetId }, text)
 	end)
 
-	for _, player in Players:GetPlayers() do
+	local function watchPlayer(player: Player)
 		watchDeaths(player)
+		player.CharacterAppearanceLoaded:Connect(function()
+			rememberLook(player)
+		end)
+		if player.Character then
+			task.spawn(rememberLook, player)
+		end
 	end
-	Players.PlayerAdded:Connect(watchDeaths)
+	for _, player in Players:GetPlayers() do
+		watchPlayer(player)
+	end
+	Players.PlayerAdded:Connect(watchPlayer)
 	Players.PlayerRemoving:Connect(function(player)
+		-- The character still exists here: last chance to read the avatar.
+		rememberLook(player)
+		local userId = player.UserId
+		task.delay(Lex.get("quaesitor.window") + Lex.get("quaesitor.after") + 60, function()
+			if not Players:GetPlayerByUserId(userId) then
+				looks[userId] = nil
+			end
+		end)
 		addEvent("left", { player.UserId }, `{player.Name} left the server`)
 		lastLictorCase[player.UserId] = nil
 		Quaesitor.endReplay(player)
