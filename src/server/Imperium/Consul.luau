@@ -19,11 +19,22 @@ local Veredarius = require(Imperium.Veredarius)
 local logger = Scriba.scoped("Consul")
 
 local Consul = {
-	dependencies = { "Senatus", "Praetor", "Praefectus", "Censor", "Lex", "Praeco", "Lictor", "Tribune" },
+	dependencies = {
+		"Senatus",
+		"Praetor",
+		"Praefectus",
+		"Censor",
+		"Lex",
+		"Praeco",
+		"Lictor",
+		"Tribune",
+		"Quaesitor",
+	},
 }
 
 local Senatus: any
 local Lictor: any
+local Quaesitor: any
 local Tribune: any
 local Praetor: any
 local Praefectus: any
@@ -361,8 +372,29 @@ actions["praetor.unban"] = {
 --   to     the staff member goes to the player
 --   bring  the player comes to the staff member
 --   point  the player goes to the staff point (Lex consul.staff_point)
--- slot 1 or 2 shifts the arrival sideways, so two players sent together do not overlap.
-local SLOTS = { [0] = CFrame.new(0, 0, 4), [1] = CFrame.new(4, 0, 4), [2] = CFrame.new(-4, 0, 4) }
+-- With "to" and "bring", the one who moves lands in front of the other and faces them.
+-- Players sent together (slot 1 to count) stand in a line, centred and all facing the
+-- same way; slot 0 lands in the middle.
+local MAX_SLOT = 11
+local AHEAD = 5 -- studs in front of the player reached
+local SPACING = 3.5 -- studs between two players sent together
+
+local function sideways(slot: number, count: number): number
+	if slot <= 0 or count <= 1 then
+		return 0
+	end
+	return (slot - (count + 1) / 2) * SPACING
+end
+
+-- In front of anchor, turned towards it (level, so nobody ends up tilted).
+local function facing(anchor: CFrame, slot: number, count: number): CFrame
+	local position = (anchor * CFrame.new(sideways(slot, count), 0, -AHEAD)).Position
+	local back = anchor.LookVector * Vector3.new(-1, 0, -1)
+	if back.Magnitude < 0.01 then
+		back = Vector3.new(0, 0, 1)
+	end
+	return CFrame.lookAt(position, position + back.Unit)
+end
 local MOVES = { to = "teleport to", bring = "teleport bring", point = "teleport to staff point" }
 
 actions["teleport"] = {
@@ -384,24 +416,26 @@ actions["teleport"] = {
 		if not model then
 			return failure("no_character")
 		end
+		local count = if Core.isPositiveInteger(d.count) and d.count <= MAX_SLOT then d.count else 1
+		local slot = if Core.isPositiveInteger(d.slot) and d.slot <= count then d.slot else 0
 		local destination: CFrame
 		if direction == "point" then
 			local point = staffPoint()
 			if not point then
 				return failure("no_staff_point")
 			end
-			destination = point.CFrame + Vector3.new(0, point.Size.Y / 2 + 3, 0)
+			destination = (point.CFrame + Vector3.new(0, point.Size.Y / 2 + 3, 0))
+				* CFrame.new(sideways(slot, count), 0, 0)
 		else
 			local other = character(if direction == "to" then target else actor)
 			if not other then
 				return failure("no_character")
 			end
-			destination = other:GetPivot()
+			destination = facing(other:GetPivot(), slot, count)
 		end
-		local slot = if d.slot == 1 or d.slot == 2 then d.slot else 0
 		-- A staff teleport is legitimate: Lictor must not flag it.
 		Lictor.exempt(mover, 2)
-		model:PivotTo(destination * SLOTS[slot])
+		model:PivotTo(destination)
 		Censor.logAction(actor, MOVES[direction], { name = target.Name, userId = target.UserId })
 		return success()
 	end,
@@ -547,11 +581,12 @@ actions["censor.log"] = {
 
 actions["lictor.list"] = {
 	permission = "lictor.view",
-	execute = function()
+	execute = function(actor)
 		return success({
 			suspects = Lictor.suspects(),
 			recent = Lictor.recent(30),
 			thresholds = Lictor.thresholds(),
+			cases = if Senatus.can(actor, "quaesitor.view") then Quaesitor.list("lictor", 8) else nil,
 		})
 	end,
 }
@@ -637,12 +672,18 @@ actions["tribune.detail"] = {
 			return failure("ticket_not_found")
 		end
 		local log = Censor.getLog(200)
+		local targets = {}
+		for _, target in Tribune.targetsOf(ticket) do
+			table.insert(targets, personOf(actor, target.userId, target.name, log))
+		end
 		return success({
 			ticket = ticket,
 			reporter = personOf(actor, ticket.reporterId, ticket.reporterName, log),
-			target = if ticket.targetId then personOf(actor, ticket.targetId, ticket.targetName, log) else nil,
+			targets = targets,
+			target = targets[1],
 			maxComment = Tribune.MAX_COMMENT,
 			staffPoint = staffPoint() ~= nil,
+			case = if Senatus.can(actor, "quaesitor.view") then Quaesitor.caseOfTicket(ticket.id) else nil,
 		})
 	end,
 }
@@ -652,8 +693,14 @@ local function ticketResult(actor: Player, action: string, ok: boolean, code: st
 	if not ok or not ticket then
 		return failure(code or "internal_error")
 	end
+	-- The Log links to the first reported player; the others are named in the details.
 	local target = if ticket.targetId then { name = ticket.targetName, userId = ticket.targetId } else nil
-	Censor.logAction(actor, action, target, `#{ticket.id} {ticket.categoryLabel}`)
+	local details = `#{ticket.id} {ticket.categoryLabel}`
+	local targets = Tribune.targetsOf(ticket)
+	if #targets > 1 then
+		details ..= ` · {Tribune.targetNames(ticket)}`
+	end
+	Censor.logAction(actor, action, target, details)
 	return success()
 end
 
@@ -707,6 +754,93 @@ actions["tribune.close"] = {
 	end,
 }
 
+local SOURCES = { report = true, lictor = true }
+
+actions["quaesitor.list"] = {
+	permission = "quaesitor.view",
+	execute = function(_, d)
+		local cases = Quaesitor.list(if SOURCES[d.source] then d.source else nil, 60)
+		if not cases then
+			return failure("save_failed")
+		end
+		return success({
+			cases = cases,
+			enabled = Lex.get("quaesitor.enabled"),
+			window = Lex.get("quaesitor.window"),
+			after = Lex.get("quaesitor.after"),
+			interval = Lex.get("quaesitor.interval"),
+			others = Lex.get("quaesitor.others"),
+			radius = Lex.get("quaesitor.nearby_radius"),
+			retention = Lex.get("quaesitor.retention_days"),
+		})
+	end,
+}
+
+-- The full case: positions and events. Opening one is logged, like any look at a record.
+actions["quaesitor.get"] = {
+	permission = "quaesitor.view",
+	execute = function(actor, d)
+		if not Core.isPositiveInteger(d.id) then
+			return failure("case_not_found")
+		end
+		local case, code = Quaesitor.get(d.id)
+		if not case then
+			return failure(code or "case_not_found")
+		end
+		local target = nil
+		for _, person in case.players do
+			if person.role ~= "reporter" then
+				target = { name = person.name, userId = person.userId }
+				break
+			end
+		end
+		Censor.logAction(actor, "case opened", target, `#{case.id} {case.label}`)
+		return success({
+			case = case,
+			ticketAccess = Senatus.can(actor, "tribune.handle"),
+		})
+	end,
+}
+
+-- Avatars of a replay, handed to the viewer alone.
+actions["quaesitor.ghosts"] = {
+	permission = "quaesitor.view",
+	execute = function(actor, d)
+		if not Core.isPositiveInteger(d.id) then
+			return failure("case_not_found")
+		end
+		local folder, result = Quaesitor.ghosts(actor, d.id)
+		if not folder then
+			return failure(result :: string)
+		end
+		return success({ folder = folder, count = result })
+	end,
+}
+
+-- Streams the map around what the viewer watches during a replay.
+actions["quaesitor.focus"] = {
+	permission = "quaesitor.view",
+	execute = function(actor, d)
+		if not (Core.isNumber(d.x) and Core.isNumber(d.y) and Core.isNumber(d.z)) then
+			return failure("invalid_value")
+		end
+		local position = Vector3.new(d.x, d.y, d.z)
+		if position.Magnitude > 1e6 then
+			return failure("invalid_value")
+		end
+		Quaesitor.focus(actor, position)
+		return success()
+	end,
+}
+
+actions["quaesitor.end"] = {
+	permission = "quaesitor.view",
+	execute = function(actor)
+		Quaesitor.endReplay(actor)
+		return success()
+	end,
+}
+
 -- Broadcast to open panels --------------------------------------------------
 
 local function staffWith(permission: string): { Player }
@@ -734,6 +868,7 @@ function Consul.init(deps)
 	Praeco = deps.Praeco
 	Lictor = deps.Lictor
 	Tribune = deps.Tribune
+	Quaesitor = deps.Quaesitor
 
 	Lex.define("consul.staff_point", {
 		default = "ImperiumStaffPoint",
@@ -805,13 +940,23 @@ function Consul.start()
 			})
 		end
 	end)
+	-- A new or deleted case refreshes the case list, and the ticket or Lictor page that links to it.
+	Signum.on("quaesitor.case", function(summary)
+		push("quaesitor", summary and summary.id, "quaesitor.view")
+		if summary and summary.ticketId then
+			push("tribune", summary.ticketId, "tribune.handle")
+		elseif summary and summary.source == "lictor" then
+			push("lictor", nil, "lictor.view")
+		end
+	end)
 	-- Every change refreshes the page; a new ticket also alerts staff wherever they are.
 	Signum.on("tribune.ticket", function(ticket, created)
 		push("tribune", ticket.id, "tribune.handle")
 		if not created then
 			return
 		end
-		local about = if ticket.targetName then ` · {ticket.targetName}` else ""
+		local names = Tribune.targetNames(ticket)
+		local about = if names then ` · {names}` else ""
 		for _, player in staffWith("tribune.handle") do
 			if player.UserId ~= ticket.reporterId then
 				Praeco.notify(player, {

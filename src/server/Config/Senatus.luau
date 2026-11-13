@@ -15,6 +15,7 @@ return {
 				"consul.teleport",
 				"censor.view",
 				"lictor.view",
+				"quaesitor.view",
 				"tribune.handle",
 				"praetor.warn",
 				"praetor.mute",

@@ -46,7 +46,7 @@ local catalog: { Family } = {
 			{ name = "Praetor", role = "Moderation and sanctions", active = true, page = "Players", permission = "consul.open" },
 			{ name = "Censor", role = "Registry", active = true, page = "Log", permission = "censor.log" },
 			{ name = "Lictor", role = "Anticheat", active = true, page = "Lictor", permission = "lictor.view" },
-			{ name = "Quaesitor", role = "Investigations" },
+			{ name = "Quaesitor", role = "Investigations", active = true, page = "Quaesitor", permission = "quaesitor.view" },
 			{ name = "Praefectus", role = "Servers", active = true, page = "Server", permission = "consul.open" },
 			{ name = "Nuntius", role = "External notifications", active = true },
 			{ name = "Speculator", role = "Performance and statistics" },

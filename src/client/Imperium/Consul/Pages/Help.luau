@@ -33,11 +33,11 @@ local SECTIONS = {
 		title = "Reports",
 		path = "Forum > Tribune",
 		permission = "tribune.handle",
-		summary = "Reports sent by players with the Report button or /report, about a player or a bug. Each one comes with the context of the moment: server, positions, Lictor score, past warnings, and the chat of both players from the last 5 minutes. You get a notice for every new report. Open a report to see the record and log of both players side by side.",
+		summary = "Reports sent by players with the Report button or /report, about one or several players (up to tribune.max_targets in Settings) or a bug. Each one comes with the context of the moment: server, positions, Lictor score, past warnings, and the chat of everyone involved from the last 5 minutes. You get a notice for every new report. Open a report to see the record and log of each player involved.",
 		commands = {
 			{ "tribune.handle", "Claim / Release", "Takes a report so nobody else handles it at the same time, or gives it back." },
 			{ "tribune.handle", "Close / Dismiss", "Closes the report with an optional comment, kept in the ticket and sent to the webhook. The reporter is told, without your name, the sanction or the comment." },
-			{ "consul.teleport", "Teleport", "From an open report: go to either player, bring one or both, or send them to the staff point (a part named ImperiumStaffPoint)." },
+			{ "consul.teleport", "Teleport", "From an open report: go to any player involved, bring one or all of them, or send them to the staff point (a part named ImperiumStaffPoint)." },
 			{ "tribune.manage", "Override", "Closes or releases a report claimed by someone else." },
 		},
 	},
@@ -49,6 +49,16 @@ local SECTIONS = {
 		summary = "Players whose movements look impossible, with a suspicion score that drops over time. Above the alert threshold, staff get a notice; above the kick threshold, Praetor kicks the player.",
 		commands = {
 			{ "lictor.clear", "Clear", "Resets the score and history of a player, after a false alarm." },
+		},
+	},
+	{
+		page = "Quaesitor",
+		title = "Case files",
+		path = "Curia > Quaesitor",
+		permission = "quaesitor.view",
+		summary = "The server keeps the last minutes of every character's position, outfit and tool in hand, Lictor detections, deaths and staff actions. A report (player or bug) or a Lictor alert freezes them into a case file for the players involved and the players around them (quaesitor.others), with the minutes before and a few seconds after (quaesitor.after), linked from the report and the Anticheat page. Case files are deleted after the number of days in Settings (quaesitor.retention_days).",
+		commands = {
+			{ "quaesitor.view", "Replay", "Hides the panel and plays the case: the players appear in the world with their avatar, accessories and tools, on your screen only, and the map loads around what you watch. Pause, scrub the timeline, change the speed, hide the other players, follow any of them with the camera or fly a free camera (WASD, Q / E, right click to look)." },
 		},
 	},
 	{

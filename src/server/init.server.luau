@@ -31,6 +31,7 @@ Conditor.run({
 	systems.Censor,
 	systems.Praetor,
 	systems.Lictor,
+	systems.Quaesitor,
 	systems.Nuntius,
 	systems.Praefectus,
 	systems.Consul,

@@ -109,6 +109,50 @@ return function(ctx: any, frame: Frame)
 		end
 	end
 
+	local function caseRow(order: number, case: any)
+		local names = {}
+		for _, person in case.players do
+			table.insert(names, person.name)
+		end
+		local row = create("Frame", {
+			BackgroundColor3 = C.card,
+			Size = UDim2.new(1, 0, 0, 52),
+			LayoutOrder = order,
+			Parent = scroller,
+		}, { Components.corners(Theme.radiusSmall), Components.padding(8, 12) })
+		Components.text({
+			Text = `#{case.id}  {case.label}  ·  {table.concat(names, ", ")}`,
+			FontFace = P.medium,
+			TextSize = Theme.sizes.small + 1,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextWrapped = false,
+			Size = UDim2.new(1, -210, 0, 18),
+			Parent = row,
+		})
+		Components.text({
+			Text = `{Core.formatDate(case.date)}  ·  {math.floor(case.duration)} s recorded`,
+			TextSize = 12,
+			TextColor3 = C.textFaint,
+			TextWrapped = false,
+			Position = UDim2.fromOffset(0, 18),
+			Size = UDim2.new(1, -210, 0, 16),
+			Parent = row,
+		})
+		local buttons = create("Frame", {
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, 0, 0.5, 0),
+			Size = UDim2.new(0, 200, 0, 30),
+			Parent = row,
+		}, { Components.stack("H", 6, Enum.HorizontalAlignment.Right) })
+		Components.button("Open", "ghost", function()
+			ctx.open("Quaesitor", case.id)
+		end, { Size = UDim2.new(0, 0, 0, 28), LayoutOrder = 1, Parent = buttons })
+		Components.button("Replay", "primary", function()
+			ctx.open("Quaesitor", { id = case.id, replay = true })
+		end, { Size = UDim2.new(0, 0, 0, 28), LayoutOrder = 2, Parent = buttons })
+	end
+
 	local function detectionRow(order: number, d: any)
 		local row = create("Frame", {
 			BackgroundColor3 = C.card,
@@ -180,6 +224,23 @@ return function(ctx: any, frame: Frame)
 		end
 
 		local base = 2 + #state.suspects
+		-- Quaesitor freezes the last minutes of a player when an alert fires.
+		if state.cases then
+			Components.section("Case files from alerts", base).Parent = scroller
+			if #state.cases == 0 then
+				Components.paragraph(`No alert has created a case file yet. An alert fires when a score reaches {t.alert}; detections far apart in time do not add up, since scores drop.`, {
+					TextColor3 = C.textFaint,
+					TextSize = Theme.sizes.small + 1,
+					LayoutOrder = base + 1,
+					Parent = scroller,
+				})
+			end
+			for i, case in state.cases do
+				caseRow(base + i, case)
+			end
+			base += 2 + #state.cases
+		end
+
 		Components.section("Latest detections", base).Parent = scroller
 		if #state.recent == 0 then
 			Components.paragraph("No detections yet.", {
