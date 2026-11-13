@@ -372,15 +372,26 @@ actions["praetor.unban"] = {
 --   to     the staff member goes to the player
 --   bring  the player comes to the staff member
 --   point  the player goes to the staff point (Lex consul.staff_point)
+-- With "to" and "bring", the one who moves lands in front of the other and faces them.
 -- slot 1 to 11 shifts the arrival sideways (right, left, further right...), so players
--- sent together do not overlap; 0 lands just in front.
+-- sent together do not overlap; 0 lands straight ahead.
 local MAX_SLOT = 11
-local function slotOffset(slot: number): CFrame
+local AHEAD = 5 -- studs in front of the player reached
+local SPACING = 3.5 -- studs between two players sent together
+
+local function sideways(slot: number): number
 	if slot <= 0 then
-		return CFrame.new(0, 0, 4)
+		return 0
 	end
 	local side = if slot % 2 == 1 then 1 else -1
-	return CFrame.new(side * 4 * ((slot + 1) // 2), 0, 4)
+	return side * SPACING * ((slot + 1) // 2)
+end
+
+-- In front of anchor, turned towards it (level, so nobody ends up tilted).
+local function facing(anchor: CFrame, slot: number): CFrame
+	local position = (anchor * CFrame.new(sideways(slot), 0, -AHEAD)).Position
+	local look = Vector3.new(anchor.Position.X, position.Y, anchor.Position.Z)
+	return CFrame.lookAt(position, look)
 end
 local MOVES = { to = "teleport to", bring = "teleport bring", point = "teleport to staff point" }
 
@@ -403,24 +414,24 @@ actions["teleport"] = {
 		if not model then
 			return failure("no_character")
 		end
+		local slot = if Core.isPositiveInteger(d.slot) and d.slot <= MAX_SLOT then d.slot else 0
 		local destination: CFrame
 		if direction == "point" then
 			local point = staffPoint()
 			if not point then
 				return failure("no_staff_point")
 			end
-			destination = point.CFrame + Vector3.new(0, point.Size.Y / 2 + 3, 0)
+			destination = (point.CFrame + Vector3.new(0, point.Size.Y / 2 + 3, 0)) * CFrame.new(sideways(slot), 0, 0)
 		else
 			local other = character(if direction == "to" then target else actor)
 			if not other then
 				return failure("no_character")
 			end
-			destination = other:GetPivot()
+			destination = facing(other:GetPivot(), slot)
 		end
-		local slot = if Core.isPositiveInteger(d.slot) and d.slot <= MAX_SLOT then d.slot else 0
 		-- A staff teleport is legitimate: Lictor must not flag it.
 		Lictor.exempt(mover, 2)
-		model:PivotTo(destination * slotOffset(slot))
+		model:PivotTo(destination)
 		Censor.logAction(actor, MOVES[direction], { name = target.Name, userId = target.UserId })
 		return success()
 	end,
