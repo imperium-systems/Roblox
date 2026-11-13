@@ -3,6 +3,7 @@
 -- Opening a ticket shows everything about it: the record, the log and the chat of both
 -- players, teleports, and the closing comment sent to the webhook.
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Core = require(ReplicatedStorage:WaitForChild("ImperiumShared"):WaitForChild("Imperium"):WaitForChild("Core"))
@@ -413,39 +414,46 @@ return function(ctx: any, frame: Frame)
 			smallButton(row, "Bring", "secondary", function()
 				move(person, "bring", i, `{person.name} brought to you.`)
 			end, 2, canMove)
-			smallButton(row, "To point", "ghost", function()
-				move(person, "point", i, `{person.name} sent to the staff point.`)
-			end, 3, canMove and detail.staffPoint)
+			-- Without a staff point there is nowhere to send them: no button, a note below.
+			if detail.staffPoint then
+				smallButton(row, "To point", "ghost", function()
+					move(person, "point", i, `{person.name} sent to the staff point.`)
+				end, 3, canMove)
+			end
 		end
 
+		-- Everyone at once: the players on this server you can move. You are left out when
+		-- you are one of them (staff testing their own report), as are players above you.
+		local me = Players.LocalPlayer.UserId
 		local everyoneHere = true
-		for _, entry in people do
-			if not entry.person.online then
+		local movable = {}
+		local skippedSelf = false
+		for i, entry in people do
+			local person = entry.person
+			if not person.online then
 				everyoneHere = false
+			elseif person.userId == me then
+				skippedSelf = true
+			elseif person.canAct then
+				table.insert(movable, { person = person, slot = i })
 			end
 		end
 		if #people > 1 then
-			local two = #people == 2
+			local two = #movable == 2
 			local row = buttonRow(card, 10)
 			Components.text({
-				Text = if two then "Both" else `All {#people}`,
+				Text = if two then "Both" else `All ({#movable})`,
 				FontFace = P.medium,
 				TextSize = Theme.sizes.small + 1,
 				Size = UDim2.new(0, 170, 0, 28),
 				LayoutOrder = 0,
 				Parent = row,
 			})
-			local all = everyoneHere
-			for _, entry in people do
-				if not entry.person.canAct then
-					all = false
-				end
-			end
 			local function moveAll(direction: string, message: string)
 				task.spawn(function()
 					local done = true
-					for i, entry in people do
-						local ok = ctx.execute("teleport", { userId = entry.person.userId, direction = direction, slot = i })
+					for _, entry in movable do
+						local ok = ctx.execute("teleport", { userId = entry.person.userId, direction = direction, slot = entry.slot })
 						done = done and ok
 					end
 					if done then
@@ -454,16 +462,21 @@ return function(ctx: any, frame: Frame)
 				end)
 			end
 			smallButton(row, if two then "Bring both" else "Bring all", "secondary", function()
-				moveAll("bring", if two then "Both players brought to you." else "All players brought to you.")
-			end, 1, all)
-			smallButton(row, if two then "Both to point" else "All to point", "ghost", function()
-				moveAll("point", if two then "Both players sent to the staff point." else "All players sent to the staff point.")
-			end, 2, all and detail.staffPoint)
+				moveAll("bring", if two then "Both players brought to you." else "Players brought to you.")
+			end, 1, #movable > 0)
+			if detail.staffPoint then
+				smallButton(row, if two then "Both to point" else "All to point", "ghost", function()
+					moveAll("point", if two then "Both players sent to the staff point." else "Players sent to the staff point.")
+				end, 2, #movable > 0)
+			end
 		end
 
 		local notes = {}
 		if not detail.staffPoint then
-			table.insert(notes, "No staff point: add a part named ImperiumStaffPoint in Workspace to send players there.")
+			table.insert(notes, "To point: add a part named ImperiumStaffPoint in Workspace to send players there.")
+		end
+		if skippedSelf and #people > 1 then
+			table.insert(notes, "You are one of the players: Bring all leaves you out.")
 		end
 		if not everyoneHere then
 			table.insert(notes, "Teleports only reach players on this server.")
