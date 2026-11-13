@@ -389,8 +389,17 @@ return function(ctx: any, frame: Frame)
 			table.insert(people, { role = "Reported", person = target })
 		end
 
-		local function move(person: any, direction: string, slot: number, message: string)
-			act("teleport", { userId = person.userId, direction = direction, slot = slot }, message)
+		local function move(person: any, direction: string, message: string)
+			act("teleport", { userId = person.userId, direction = direction }, message)
+		end
+
+		-- The staff point may be missing: say so on click instead of hiding the button.
+		local function noPoint(): boolean
+			if detail.staffPoint then
+				return false
+			end
+			ctx.notify(ctx.errorMessage("no_staff_point"), "error")
+			return true
 		end
 
 		for i, entry in people do
@@ -409,17 +418,16 @@ return function(ctx: any, frame: Frame)
 			local here = person.online
 			local canMove = here and person.canAct
 			smallButton(row, "Go to", "secondary", function()
-				move(person, "to", 0, `Teleported to {person.name}.`)
+				move(person, "to", `Teleported to {person.name}.`)
 			end, 1, here)
 			smallButton(row, "Bring", "secondary", function()
-				move(person, "bring", i, `{person.name} brought to you.`)
+				move(person, "bring", `{person.name} brought to you.`)
 			end, 2, canMove)
-			-- Without a staff point there is nowhere to send them: no button, a note below.
-			if detail.staffPoint then
-				smallButton(row, "To point", "ghost", function()
-					move(person, "point", i, `{person.name} sent to the staff point.`)
-				end, 3, canMove)
-			end
+			smallButton(row, "To point", "ghost", function()
+				if not noPoint() then
+					move(person, "point", `{person.name} sent to the staff point.`)
+				end
+			end, 3, canMove)
 		end
 
 		-- Everyone at once: the players on this server you can move. You are left out when
@@ -428,14 +436,14 @@ return function(ctx: any, frame: Frame)
 		local everyoneHere = true
 		local movable = {}
 		local skippedSelf = false
-		for i, entry in people do
+		for _, entry in people do
 			local person = entry.person
 			if not person.online then
 				everyoneHere = false
 			elseif person.userId == me then
 				skippedSelf = true
 			elseif person.canAct then
-				table.insert(movable, { person = person, slot = i })
+				table.insert(movable, person)
 			end
 		end
 		if #people > 1 then
@@ -449,11 +457,17 @@ return function(ctx: any, frame: Frame)
 				LayoutOrder = 0,
 				Parent = row,
 			})
+			-- In a line: each player gets a place from 1 to the number of players moved.
 			local function moveAll(direction: string, message: string)
 				task.spawn(function()
 					local done = true
-					for _, entry in movable do
-						local ok = ctx.execute("teleport", { userId = entry.person.userId, direction = direction, slot = entry.slot })
+					for slot, person in movable do
+						local ok = ctx.execute("teleport", {
+							userId = person.userId,
+							direction = direction,
+							slot = slot,
+							count = #movable,
+						})
 						done = done and ok
 					end
 					if done then
@@ -464,17 +478,14 @@ return function(ctx: any, frame: Frame)
 			smallButton(row, if two then "Bring both" else "Bring all", "secondary", function()
 				moveAll("bring", if two then "Both players brought to you." else "Players brought to you.")
 			end, 1, #movable > 0)
-			if detail.staffPoint then
-				smallButton(row, if two then "Both to point" else "All to point", "ghost", function()
+			smallButton(row, if two then "Both to point" else "All to point", "ghost", function()
+				if not noPoint() then
 					moveAll("point", if two then "Both players sent to the staff point." else "Players sent to the staff point.")
-				end, 2, #movable > 0)
-			end
+				end
+			end, 2, #movable > 0)
 		end
 
 		local notes = {}
-		if not detail.staffPoint then
-			table.insert(notes, "To point: add a part named ImperiumStaffPoint in Workspace to send players there.")
-		end
 		if skippedSelf and #people > 1 then
 			table.insert(notes, "You are one of the players: Bring all leaves you out.")
 		end
